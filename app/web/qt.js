@@ -32,9 +32,21 @@ function load(key) {
   try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : null; } catch (e) { return memoryReminder; }
 }
 
+// forecast points up to closing time only (nobody should plan around 19:32 when dinner shuts at 19:30)
+function openForecasts(snap) {
+  const s = snap && snap.state, fc = ((snap && snap.prediction) || {}).forecasts || [];
+  if (!s || !snap.closes_at) return fc;
+  const now = parseLocal(s.timestamp), close = parseLocal(snap.closes_at);
+  return fc.filter((f) => addMin(now, f.horizon_min) <= close);
+}
+function minutesToClose(snap) {
+  if (!snap || !snap.state || !snap.closes_at) return null;
+  return (parseLocal(snap.closes_at) - parseLocal(snap.state.timestamp)) / 60000;
+}
+
 // ------------------------------------------------------------------ what the page says
 function peakOf(snap) {
-  const s = snap.state, fc = (snap.prediction || {}).forecasts || [];
+  const s = snap.state, fc = openForecasts(snap);
   const top = fc.reduce((a, f) => (f.p50 > (a ? a.p50 : -1) ? f : a), null);
   // only worth saying when the line really grows (a minute or more above the wait now)
   return top && top.p50 >= s.wait_now_min + 1 ? hhmm(addMin(parseLocal(s.timestamp), top.horizon_min)) : null;
@@ -86,9 +98,10 @@ function chartSvg(snap) {
   if (!s || !hist.length) return { svg: "", label: "No data yet" };
   const H = Math.min(60, hist.length - 1);
   const h = hist.slice(hist.length - 1 - H).map((r, i) => ({ x: i - H, y: r.wait }));
-  const fc = (p.forecasts || []).filter((f) => f.horizon_min <= 60);
+  const fc = openForecasts(snap).filter((f) => f.horizon_min <= 60);
+  const toClose = minutesToClose(snap);
   const F = fc.length ? Math.max(...fc.map((f) => f.horizon_min)) : 0;
-  const lo = -Math.max(H, 1), hi = Math.max(F, 1);
+  const lo = -Math.max(H, 1), hi = Math.max(F, toClose !== null && toClose > 0 && toClose <= 60 ? toClose : 0, 1);
   const vals = h.map((q) => q.y).concat(fc.map((f) => f.p90), [s.wait_now_min || 0]);
   const top = Math.max(10, Math.ceil(Math.max(...vals) / 5) * 5);
   const X = (m) => 40 + ((m - lo) / (hi - lo)) * 540, Y = (v) => 200 - (v / top) * 180;
@@ -115,6 +128,10 @@ function chartSvg(snap) {
       if (!nearBest) out.push(`<text x="${X(f.horizon_min) - 6}" y="${Y(f.p50) - 8}" fill="${INK}" font-size="11" text-anchor="end">${num(f.p50)}</text>`);
     });
   }
+  if (toClose !== null && toClose > 0 && toClose <= hi) {
+    out.push(`<line x1="${X(toClose)}" y1="20" x2="${X(toClose)}" y2="200" stroke="${INK}" stroke-width="1"></line>`);
+    out.push(`<text x="${X(toClose) - 4}" y="30" fill="${INK}" font-size="10" text-anchor="end">Closes ${esc(snap.closes_at.slice(11, 16))}</text>`);
+  }
   out.push(`<polyline points="${h.map((q) => `${X(q.x)},${Y(q.y)}`).join(" ")}" fill="none" stroke="${INK}" stroke-width="3"></polyline>`);
   out.push(`<text x="40" y="222" fill="${INK}" font-size="10">${esc(hist[hist.length - 1 - H].t)}</text>`);
   out.push(`<text x="${X(0)}" y="222" fill="${INK}" font-size="10" text-anchor="middle">${esc(s.timestamp.slice(11, 16))}</text>`);
@@ -137,7 +154,7 @@ function renderBars(snap) {
   if (!s) { el.setAttribute("aria-label", "No data"); setText("bars-note", ""); return; }
   const now = parseLocal(s.timestamp);
   const rows = [{ t: "Now", v: s.wait_now_min, m: 0, best: false }]
-    .concat((p.forecasts || []).map((f) => ({ t: hhmm(addMin(now, f.horizon_min)), v: f.p50, m: f.horizon_min, best: false })));
+    .concat(openForecasts(snap).map((f) => ({ t: hhmm(addMin(now, f.horizon_min)), v: f.p50, m: f.horizon_min, best: false })));
   const best = snap.best_slot;
   if (best && p.recommendation === "wait") { // the recommended time gets its own bar, in the signal colour
     const same = rows.find((r) => r.t === best.slot);
@@ -153,7 +170,9 @@ function renderBars(snap) {
     el.append(a, b, c);
   });
   el.setAttribute("aria-label", rows.map((r) => `${r.t}: ${num(r.v)} minutes`).join(", "));
-  setText("bars-note", `Bar scale: ${scale} min.` + (best ? ` Range at ${best.slot}: ${num(best.p10)}–${num(best.p90)} (calibrated on Disney rides, unchecked here).` : ""));
+  const cut = (p.forecasts || []).length > openForecasts(snap).length;
+  setText("bars-note", `Bar scale: ${scale} min.` + (cut ? ` Closes ${snap.closes_at.slice(11, 16)}, nothing shown after.` : "") +
+    (best ? ` Range at ${best.slot}: ${num(best.p10)}–${num(best.p90)} (calibrated on Disney rides, unchecked here).` : ""));
 }
 
 // ------------------------------------------------------------------ reminder ("remind me at 18:35")
@@ -236,7 +255,7 @@ function render(snap) {
   const hero = $("hero"); if (hero) { hero.textContent = v.hero; hero.classList.toggle("word", v.word); }
   setText("lead", v.lead);
   setText("working", !s ? "" : [
-    `Right now: queue ÷ rate = ${s.queue_length} ÷ ${num(s.service_rate_per_min, 2)} = ${num(s.wait_instant_min)} min. Shown: median of the last 3 minutes.`,
+    `Wait = queue ÷ service rate, as the median of the last 3 minutes. A single minute is noisy (the latest reads ${s.queue_length} ÷ ${num(s.service_rate_per_min, 2)} = ${num(s.wait_instant_min)} min), so it is not shown as the wait.`,
     p.forecasts && p.forecasts.length ? "Forecast: LightGBM, trained on Disney World 2015–17." : "",
     snap.best_slot ? `P(wait > ${snap.best_slot.max_wait_min} min) at ${snap.best_slot.slot}: ${num(snap.best_slot.prob_wait_over_max, 2)}.` : "",
     p.source ? `Decided by ${p.source.replace("model:generic_v2 + ", "")}.` : "",
@@ -250,8 +269,8 @@ function render(snap) {
   setText("m-queue", s ? String(s.queue_length) : "–");
   setText("m-joined", s ? String(s.arrivals_last_5m) : "–");
   setText("m-rate", s ? num(s.service_rate_per_min) : "–");
-  setText("m-note", !s ? "" : `Right now: ${num(s.wait_instant_min)} min.` +
-    (s.wait_now_ci80_min ? ` 80% range ${num(s.wait_now_ci80_min[0])}–${num(s.wait_now_ci80_min[1])} min.` : ""));
+  setText("m-note", !s ? "" : `Wait: median of the last 3 minutes.` +
+    (s.wait_now_ci80_min ? ` Latest minute, 80% range: ${num(s.wait_now_ci80_min[0])}–${num(s.wait_now_ci80_min[1])} min.` : ""));
 
   const chart = $("chart");
   if (chart) { const c = chartSvg(snap); chart.innerHTML = c.svg; chart.setAttribute("aria-label", c.label); }

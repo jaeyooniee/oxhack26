@@ -33,8 +33,10 @@ from model.forecast import forecast  # noqa: E402
 PREDICTION_JSON = ROOT / "data" / "live" / "prediction.json"
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
 MAX_WAIT_MIN = 5.0     # "a short queue" for the probability tool
-MIN_SAVING_MIN = 3     # recommend waiting only if it saves at least this much
-TIE_MIN = 0.5          # slots within this of the best P50 count as equally good; take the earliest
+MIN_SAVING_MIN = 3     # recommend waiting only if the net saving (below) is at least this much
+DELAY_COST = 0.1       # each minute you put off going must save 0.1 min of queue: 30 min later must save 3 more
+LAST_CALL_MIN = 15     # never send people back later than this before closing (food runs out)
+TIE_MIN = 0.5          # slots within this of the best net saving count as equally good; take the earliest
 STALE_S = 120          # live mode: state older than this -> "unknown"
 RECOMMENDATIONS = ("go_now", "wait", "unknown")
 
@@ -42,8 +44,10 @@ SYSTEM = f"""You advise people queueing for food at a hackathon whether to join 
 Rules:
 - Call the tools to get the current queue state, the forecast and slot comparisons.
 - Never state a number that did not come from a tool result. Do not do arithmetic yourself.
-- Recommend "wait" only if a later slot's expected wait is at least {MIN_SAVING_MIN} minutes lower
-  than the wait now; otherwise "go_now". Use "unknown" only if the tools fail.
+- Only the candidate slots you are given are allowed (they stop {LAST_CALL_MIN} minutes before closing).
+- Coming back later costs people time: a slot is only worth it if its expected wait is lower than
+  the wait now by at least {MIN_SAVING_MIN} minutes plus {DELAY_COST:g} minutes for every minute until it.
+  Prefer the earliest such slot; otherwise "go_now". Use "unknown" only if the tools fail.
 - Reply with JSON only, no markdown:
   {{"recommendation": "go_now" | "wait" | "unknown", "best_time": "HH:MM",
     "explanation": "one friendly sentence, at most 25 words"}}"""
@@ -51,32 +55,43 @@ Rules:
 
 def build_prompt(user_question: str | None = None, state: dict | None = None) -> str:
     state = state or tools.get_queue_state()
-    slots = tools.candidate_slots(state)
+    slots = tools.candidate_slots(state, last_call_min=LAST_CALL_MIN)
     q = user_question or "Should I join the food queue now, or come back later? If later, when?"
     return (f"Current time: {state['timestamp'][11:16]}. Candidate slots: {', '.join(slots)}. "
             f"A short wait means under {MAX_WAIT_MIN:g} minutes.\n{q}")
 
 
 def _slot_table(state: dict, fcs: list[dict]) -> list[dict]:
-    return [s for s in tools.slot_forecasts(state, fcs, tools.candidate_slots(state), MAX_WAIT_MIN)
-            if "error" not in s]
+    """Candidate slots up to LAST_CALL_MIN before closing, each with its net value."""
+    wait_now = float(state["wait_now_min"])
+    table = [s for s in tools.slot_forecasts(state, fcs, tools.candidate_slots(state, last_call_min=LAST_CALL_MIN),
+                                             MAX_WAIT_MIN) if "error" not in s]
+    for s in table:
+        s["net_saving_min"] = net_saving(wait_now, s)
+    return table
+
+
+def net_saving(wait_now: float, slot: dict) -> float:
+    """Minutes saved by going at this slot instead of now, minus DELAY_COST per minute of delay."""
+    return wait_now - slot["expected_wait_min"] - DELAY_COST * slot["minutes_ahead"]
 
 
 def rule_decision(state: dict, fcs: list[dict]) -> dict:
-    """Go at the earliest slot whose expected wait is (near) the lowest; 'go_now' unless it saves enough."""
+    """Go at the earliest slot whose net saving is (near) the best; 'go_now' unless that is worth it."""
     table = _slot_table(state, fcs)
-    best_p50 = min(s["expected_wait_min"] for s in table)
-    best = next(s for s in table if s["expected_wait_min"] <= best_p50 + TIE_MIN)
+    top = max(s["net_saving_min"] for s in table)
+    best = next(s for s in table if s["net_saving_min"] >= top - TIE_MIN)
     wait_now = float(state["wait_now_min"])
     saved = round(wait_now - best["expected_wait_min"])
     now_hhmm = state["timestamp"][11:16]
-    if saved >= MIN_SAVING_MIN and best["minutes_ahead"] > 0:
+    if best["net_saving_min"] >= MIN_SAVING_MIN and best["minutes_ahead"] > 0:
         expl = (f"Wait now is about {wait_now:g} min; at {best['slot']} it should be "
                 f"{best['expected_wait_min']:g} min (likely {best['p10']:g}-{best['p90']:g}), "
                 f"saving about {saved} min.")
         return {"recommendation": "wait", "best_time": best["slot"], "minutes_saved": saved,
                 "explanation": expl}
-    trend = "isn't expected to get much shorter" if saved > 0 else "is likely to grow"
+    best_raw = max(round(wait_now - s["expected_wait_min"]) for s in table)
+    trend = "isn't expected to get much shorter soon" if best_raw > 0 else "is likely to grow"
     if wait_now == 0:
         trend = "is empty"
     return {"recommendation": "go_now", "best_time": now_hhmm, "minutes_saved": 0,
@@ -160,8 +175,9 @@ def gemini_decision(state: dict, fcs: list[dict], user_question: str | None = No
     if rec == "wait" and best_time not in table:
         raise ValueError(f"best_time {best_time!r} is not a candidate slot")
     saved = round(float(state["wait_now_min"]) - table[best_time]["expected_wait_min"]) if rec == "wait" else 0
-    if rec == "wait" and saved < MIN_SAVING_MIN:
-        raise ValueError(f"'wait' until {best_time} saves only {saved} min (< {MIN_SAVING_MIN})")
+    if rec == "wait" and table[best_time]["net_saving_min"] < MIN_SAVING_MIN:
+        raise ValueError(f"'wait' until {best_time} saves {saved} min for a {table[best_time]['minutes_ahead']}-min "
+                         f"delay: not worth it (net {table[best_time]['net_saving_min']:.1f} < {MIN_SAVING_MIN})")
     explanation = str(reply.get("explanation", "")).strip()
     times = set(table) | {now_hhmm, state["venue_open"], state["venue_close"]}
     # savings per slot (computed here, so Gemini may say "save about 4 minutes")

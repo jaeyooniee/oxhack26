@@ -1,5 +1,12 @@
 /* QueueTime, direction C: Swiss minimal. Paper, black, one signal orange. IBM Plex Sans + IBM Plex Mono.
    House rules: square corners, no shadows, no gradients, no icons or emoji, nothing moves on hover. */
+/* IBM Plex, served by the laptop itself (fonts/LICENSE.txt: SIL Open Font Licence), so nothing loads from outside */
+@font-face { font-family: "IBM Plex Sans"; font-weight: 400; font-style: normal; font-display: swap; src: url("/fonts/IBMPlexSans-Regular.woff2") format("woff2"); }
+@font-face { font-family: "IBM Plex Sans"; font-weight: 600; font-style: normal; font-display: swap; src: url("/fonts/IBMPlexSans-SemiBold.woff2") format("woff2"); }
+@font-face { font-family: "IBM Plex Sans"; font-weight: 700; font-style: normal; font-display: swap; src: url("/fonts/IBMPlexSans-Bold.woff2") format("woff2"); }
+@font-face { font-family: "IBM Plex Mono"; font-weight: 400; font-style: normal; font-display: swap; src: url("/fonts/IBMPlexMono-Regular.woff2") format("woff2"); }
+@font-face { font-family: "IBM Plex Mono"; font-weight: 500; font-style: normal; font-display: swap; src: url("/fonts/IBMPlexMono-Medium.woff2") format("woff2"); }
+
 :root {
   --paper: #F2F1EC;
   --ink: #0F0F0F;

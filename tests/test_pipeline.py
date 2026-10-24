@@ -609,6 +609,69 @@ def test_dashboard_replay_renders_every_stage():
         sys.argv = argv
 
 
+def _decide(ts_, wait, fcs, close="19:30"):
+    st = {"timestamp": ts_, "status": "open", "queue_length": 20, "wait_now_min": wait, "wait_instant_min": wait,
+          "venue_open": "18:00", "venue_close": close}
+    return qa.rule_decision(st, fcs)
+
+
+def test_no_far_off_or_after_closing_advice():
+    """Review 3: 'wait 55 minutes to save 3' and slots near closing must not be recommended."""
+    flat = [{"horizon_min": 15, "p10": 6, "p50": 11.4, "p90": 17}, {"horizon_min": 30, "p10": 5, "p50": 10.9, "p90": 17},
+            {"horizon_min": 60, "p10": 3, "p50": 8.5, "p90": 15}]
+    d = _decide("2026-10-24T18:29:00", 11.4, flat)
+    assert d["recommendation"] == "go_now", d  # the reviewer's case: 3 min saved for a 55-min delay
+    drop = [{"horizon_min": 15, "p10": 2, "p50": 4.0, "p90": 8}, {"horizon_min": 30, "p10": 1, "p50": 3.0, "p90": 7},
+            {"horizon_min": 60, "p10": 1, "p50": 2.5, "p90": 6}]
+    d = _decide("2026-10-24T18:20:00", 14.0, drop)
+    assert d["recommendation"] == "wait" and d["best_time"] <= "18:35", d  # a real, soon drop still says wait
+    assert d["minutes_saved"] >= 3
+    # 19:05, closes 19:30: big drop forecast, but nothing later than 19:15 may be suggested
+    d = _decide("2026-10-24T19:05:00", 14.0, drop)
+    assert d["recommendation"] == "go_now" or d["best_time"] <= "19:15", d
+    d = _decide("2026-10-24T19:20:00", 14.0, drop)  # inside last call: only "now" is left
+    assert d["recommendation"] == "go_now", d
+    # midnight rush: 00:20 with close 00:45 -> last call 00:30
+    d = _decide("2026-10-25T00:20:00", 14.0, drop, close="00:45")
+    assert d["recommendation"] == "go_now" or d["best_time"] <= "00:30", d
+    # every slot the agent can ever be offered respects last call
+    st = {"timestamp": "2026-10-24T18:50:00", "venue_open": "18:00", "venue_close": "19:30"}
+    assert tools.candidate_slots(st, last_call_min=qa.LAST_CALL_MIN)[-1] == "19:15"
+
+
+def test_gemini_far_off_wait_is_rejected():
+    st = {"timestamp": "2026-10-24T18:29:00", "status": "open", "queue_length": 20, "wait_now_min": 11.4,
+          "wait_instant_min": 11.4, "venue_open": "18:00", "venue_close": "19:30"}
+    flat = [{"horizon_min": 15, "p10": 6, "p50": 11.4, "p90": 17}, {"horizon_min": 30, "p10": 5, "p50": 10.9, "p90": 17},
+            {"horizon_min": 60, "p10": 3, "p50": 8.5, "p90": 15}]
+    os.environ["GEMINI_API_KEY"] = "test"
+    try:
+        for slot in ("19:14", "19:24"):  # within last call but not worth it / after last call
+            g = _FakeGenai(json.dumps({"recommendation": "wait", "best_time": slot, "explanation": "Come back later."}),
+                           call_tools=False).install()
+            try:
+                qa.gemini_decision(st, flat)
+                raise AssertionError(f"accepted a pointless wait until {slot}")
+            except ValueError:
+                pass
+            finally:
+                g.uninstall()
+    finally:
+        del os.environ["GEMINI_API_KEY"]
+
+
+def test_fake_rush_never_suggests_a_slot_near_closing():
+    df = S.load_run(ROOT / "data/sample/fake_rush_run.csv")
+    for m in range(5, 90, 3):
+        at = df.index[0] + pd.Timedelta(minutes=m)
+        st = state(df[df.index <= at], at)
+        p = qa.run_once(st, use_gemini=False, out=None)
+        if p["recommendation"] == "wait":
+            ahead = (pd.Timestamp(f"{at.date()}T{p['best_time']}") - at).total_seconds() / 60
+            assert p["best_time"] <= "19:15", (m, p)
+            assert p["minutes_saved"] - qa.DELAY_COST * ahead >= qa.MIN_SAVING_MIN - 0.6, (m, p, ahead)
+
+
 def _serve(source):
     """Start app/server.py's handler on a free port in a thread; returns (base url, server)."""
     import threading
@@ -657,6 +720,15 @@ def test_app_server_static_files_and_replay_api():
             for banned in ("—", "Inter", "Geist", "Space Grotesk", "border-radius: 1", "box-shadow",
                            "linear-gradient", "radial-gradient", "transition", "@keyframes", "animation"):
                 assert banned not in text, (path, banned)
+        # nothing loads from outside the laptop (review 3: venue wifi may block Google Fonts)
+        for path in ("/", "/phone", "/terms", "/privacy", "/site.css", "/qt.js", "/sw.js"):
+            text = _get(base + path)[2].decode()
+            assert "googleapis" not in text and "gstatic" not in text, path
+        css = _get(base + "/site.css")[2].decode()
+        for font in re.findall(r'url\("(/fonts/[^"]+)"\)', css):
+            code, ct, body = _get(base + font)
+            assert code == 200 and ct == "font/woff2" and body[:4] == b"wOF2", font
+        assert _get(base + "/fonts/LICENSE.txt")[0] == 200
         for page in ("/", "/phone"):
             html = _get(base + page)[2].decode()
             assert 'href="/terms"' in html and 'href="/privacy"' in html, page
@@ -668,6 +740,7 @@ def test_app_server_static_files_and_replay_api():
         snap = json.loads(body)
         assert code == 200 and "application/json" in ct
         assert snap["mode"] == "replay" and snap["status"] == "ok" and snap["replay"]["paused"]
+        assert snap["closes_at"] == "2026-10-24T19:30:00", snap["closes_at"]
         assert snap["state"]["timestamp"].startswith("2026-10-24T18:25"), snap["state"]["timestamp"]
         assert snap["prediction"]["recommendation"] in ("go_now", "wait") and snap["history"] and snap["sensors"]
         if snap["prediction"]["recommendation"] == "wait":

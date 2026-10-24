@@ -33,7 +33,7 @@ from agent.queue_agent import MAX_WAIT_MIN, STALE_S, run_once  # noqa: E402
 from agent.tools import slot_forecasts  # noqa: E402
 from ingest.logger import PREDICTION_MAX_AGE_S, prediction_age_s  # noqa: E402
 from ingest.state import (load_camera, load_run, load_schedule, load_ultrasonic, next_rush,  # noqa: E402
-                          read_json, resolve_rush, state_and_history)
+                          read_json, resolve_rush, rush_window, state_and_history)
 
 WEB = Path(__file__).resolve().parent / "web"
 LIVE = ROOT / "data" / "live"
@@ -51,6 +51,12 @@ STATIC = {             # the only files served: url -> (file under app/web, cont
     "/sw.js": ("sw.js", "text/javascript; charset=utf-8"),
     "/manifest.webmanifest": ("manifest.webmanifest", "application/manifest+json"),
     "/icons/icon.svg": ("icons/icon.svg", "image/svg+xml"),
+    "/fonts/IBMPlexSans-Regular.woff2": ("fonts/IBMPlexSans-Regular.woff2", "font/woff2"),
+    "/fonts/IBMPlexSans-SemiBold.woff2": ("fonts/IBMPlexSans-SemiBold.woff2", "font/woff2"),
+    "/fonts/IBMPlexSans-Bold.woff2": ("fonts/IBMPlexSans-Bold.woff2", "font/woff2"),
+    "/fonts/IBMPlexMono-Regular.woff2": ("fonts/IBMPlexMono-Regular.woff2", "font/woff2"),
+    "/fonts/IBMPlexMono-Medium.woff2": ("fonts/IBMPlexMono-Medium.woff2", "font/woff2"),
+    "/fonts/LICENSE.txt": ("fonts/LICENSE.txt", "text/plain; charset=utf-8"),
     "/icons/icon-192.png": ("icons/icon-192.png", "image/png"),
     "/icons/icon-512.png": ("icons/icon-512.png", "image/png"),
 }
@@ -88,6 +94,15 @@ def _best_slot(state: dict | None, pred: dict | None) -> dict | None:
     except (KeyError, ValueError, TypeError):
         return None
     return None if "error" in slot else {**slot, "max_wait_min": MAX_WAIT_MIN}
+
+
+def _closes_at(state: dict | None) -> str | None:
+    """When the current rush closes (ISO, local), so the apps never show slots after it."""
+    try:
+        _, close = rush_window(datetime.fromisoformat(state["timestamp"]), state["venue_open"], state["venue_close"])
+    except (TypeError, KeyError, ValueError):
+        return None
+    return close.isoformat(timespec="seconds")
 
 
 def _sensors(df: pd.DataFrame, now: pd.Timestamp) -> dict:
@@ -152,7 +167,8 @@ class Source:
             snap = _clean({"mode": "replay" if self.replay else "live", "server_time": datetime.now().isoformat(timespec="seconds"),
                            "status": "ok", "message": "", "state": None, "prediction": None, "history": [],
                            "schedule": [], "sensors": None, "heartbeat_age_s": None, "replay": None,
-                           "best_slot": _best_slot(snap.get("state"), snap.get("prediction")), **snap})
+                           "best_slot": _best_slot(snap.get("state"), snap.get("prediction")),
+                           "closes_at": _closes_at(snap.get("state")), **snap})
             self.cached = (time.monotonic(), snap)
             return snap
 

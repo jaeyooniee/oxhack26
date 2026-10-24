@@ -89,10 +89,11 @@ def compare_slots(slots: list[str], max_wait_min: float) -> list[dict]:
     return slot_forecasts(state, forecast(state), slots, max_wait_min)
 
 
-def candidate_slots(state: dict, step_min: int = 5, until_min: int | None = None) -> list[str]:
-    """Clock times from now to the longest horizon (or closing time, if sooner), every step_min."""
+def candidate_slots(state: dict, step_min: int = 5, until_min: int | None = None, last_call_min: int = 0) -> list[str]:
+    """Clock times from now to the longest horizon, every step_min, stopping last_call_min before
+    closing (if sooner). "Now" is always the first slot."""
     now = datetime.fromisoformat(state["timestamp"])
     until = until_min if until_min is not None else max(available_horizons())
     _, close = rush_window(now, state["venue_open"], state["venue_close"])  # handles 23:45-00:45
-    until = max(0, min(until, int((close - now).total_seconds() // 60)))
+    until = max(0, min(until, int((close - now).total_seconds() // 60) - last_call_min))
     return [(now + timedelta(minutes=m)).strftime("%H:%M") for m in range(0, until + 1, step_min)]
