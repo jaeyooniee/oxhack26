@@ -1,0 +1,13 @@
+{
+  "_note": "SAMPLE - fake values for development only",
+  "timestamp": "2026-10-24T18:05:10",
+  "forecasts": [
+    {"horizon_min": 15, "p10": 5.0, "p50": 8.5, "p90": 13.0},
+    {"horizon_min": 30, "p10": 2.0, "p50": 5.0, "p90": 10.0}
+  ],
+  "recommendation": "wait",
+  "best_time": "18:35",
+  "minutes_saved": 4,
+  "explanation": "Arrivals are outpacing service right now; the queue usually eases about 30 minutes after a food drop.",
+  "source": "sample"
+}

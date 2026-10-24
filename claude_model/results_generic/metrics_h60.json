@@ -1,0 +1,21 @@
+{
+  "horizon_min": 60,
+  "1_time_split_all_rides_2019": {
+    "n": 240867,
+    "MAE_persistence": 15.24,
+    "MAE_model": 13.47,
+    "pinball_P50": 6.733,
+    "coverage_P10_P90": 0.807,
+    "interval_width": 47.64
+  },
+  "2_3_leave_one_ride_out_2019_weighted_mean": {
+    "MAE_persistence": 15.151,
+    "MAE_in_domain": 13.364,
+    "cov_in_domain": 0.807,
+    "MAE_unseen_zero_shot": 13.885,
+    "cov_unseen_zero_shot": 0.795,
+    "MAE_unseen_adapted_7d": 13.234,
+    "cov_unseen_adapted_7d": 0.804
+  },
+  "2_3_rides_where_unseen_model_beats_persistence": 12
+}

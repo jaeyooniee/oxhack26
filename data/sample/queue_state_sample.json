@@ -1,0 +1,21 @@
+{
+  "_note": "SAMPLE - fake values for development only",
+  "timestamp": "2026-10-24T18:05:00",
+  "queue_length": 11,
+  "arrivals_last_5m": 19,
+  "served_last_5m": 8,
+  "service_rate_per_min": 1.6,
+  "wait_now_min": 6.9,
+  "wait_history_min": {
+    "t-15": 3.0,
+    "t-30": 1.5,
+    "t-60": null
+  },
+  "mean_wait_today_min": 3.2,
+  "venue_open": "18:00",
+  "venue_close": "19:30",
+  "median_wait_last_7d_min": null,
+  "mins_since_change": 5,
+  "is_holiday": 0,
+  "days_to_holiday": 14
+}

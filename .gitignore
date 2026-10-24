@@ -1,0 +1,16 @@
+.env
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+data/live/*
+!data/live/.gitkeep
+claude_model/data/
+claude_model/results_generic/cache_df_*.pkl
+claude_model/results_generic_v2/loro_preds_*/
+# experiment model files (the deployable models live in model/artifacts/)
+claude_model/results/**/*.txt
+claude_model/results_generic/*.txt
+claude_model/results_generic_v2/*.txt
+claude_model/results*/*.log
+claude_model/*.log
+stale-*

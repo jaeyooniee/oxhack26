@@ -1,0 +1,24 @@
+{
+  "test_2019": {
+    "n": 240118,
+    "MAE_persistence (y = now)": 15.27,
+    "MAE_ride_x_time_of_day_mean": 20.08,
+    "MAE_model_P50": 12.61,
+    "pinball_P10": 2.679,
+    "pinball_P50": 6.306,
+    "pinball_P90": 3.183,
+    "coverage_P10_P90 (target 0.80)": 0.767,
+    "mean_interval_width_min": 38.88
+  },
+  "stress_2021": {
+    "n": 203686,
+    "MAE_persistence (y = now)": 8.59,
+    "MAE_ride_x_time_of_day_mean": 23.55,
+    "MAE_model_P50": 9.89,
+    "pinball_P10": 2.152,
+    "pinball_P50": 4.943,
+    "pinball_P90": 2.575,
+    "coverage_P10_P90 (target 0.80)": 0.762,
+    "mean_interval_width_min": 32.45
+  }
+}

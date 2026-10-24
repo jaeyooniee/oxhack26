@@ -1,0 +1,11 @@
+pandas
+numpy
+lightgbm
+matplotlib
+pyserial
+streamlit
+google-genai
+python-dotenv
+ultralytics
+opencv-python
+elevenlabs

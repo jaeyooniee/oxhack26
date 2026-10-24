@@ -1,0 +1,14 @@
+,gain_share
+hour,0.2621
+rel_week,0.1901
+frac_of_day,0.1592
+mins_to_close,0.0886
+r_lag60,0.0741
+rel_today,0.0656
+mins_since_change,0.0614
+r_lag30,0.0277
+mins_since_open,0.0238
+HOLIDAYPX,0.0167
+r_lag15,0.0154
+dow,0.0146
+HOLIDAY,0.0007

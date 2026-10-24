@@ -1,0 +1,50 @@
+{
+  "simple": {
+    "test_2019": {
+      "n": 220009,
+      "MAE_persistence (y = now)": 19.59,
+      "MAE_ride_x_time_of_day_mean": 20.63,
+      "MAE_model_P50": 14.0,
+      "pinball_P10": 2.945,
+      "pinball_P50": 6.998,
+      "pinball_P90": 3.561,
+      "coverage_P10_P90 (target 0.80)": 0.771,
+      "mean_interval_width_min": 43.34
+    },
+    "stress_2021": {
+      "n": 51590,
+      "MAE_persistence (y = now)": 10.04,
+      "MAE_ride_x_time_of_day_mean": 23.26,
+      "MAE_model_P50": 11.49,
+      "pinball_P10": 2.548,
+      "pinball_P50": 5.744,
+      "pinball_P90": 2.946,
+      "coverage_P10_P90 (target 0.80)": 0.74,
+      "mean_interval_width_min": 36.52
+    }
+  },
+  "calendar": {
+    "test_2019": {
+      "n": 220009,
+      "MAE_persistence (y = now)": 19.59,
+      "MAE_ride_x_time_of_day_mean": 20.63,
+      "MAE_model_P50": 13.7,
+      "pinball_P10": 2.815,
+      "pinball_P50": 6.85,
+      "pinball_P90": 3.479,
+      "coverage_P10_P90 (target 0.80)": 0.755,
+      "mean_interval_width_min": 39.64
+    },
+    "stress_2021": {
+      "n": 51590,
+      "MAE_persistence (y = now)": 10.04,
+      "MAE_ride_x_time_of_day_mean": 23.26,
+      "MAE_model_P50": 14.45,
+      "pinball_P10": 3.225,
+      "pinball_P50": 7.224,
+      "pinball_P90": 3.133,
+      "coverage_P10_P90 (target 0.80)": 0.655,
+      "mean_interval_width_min": 36.14
+    }
+  }
+}

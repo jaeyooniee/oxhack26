@@ -1,0 +1,22 @@
+{
+  "horizon_min": 60,
+  "n_test_rows": 240867,
+  "mean_actual_wait_min": 56.94,
+  "MAE_min": 13.47,
+  "MAE_naive_min": 15.24,
+  "skill_vs_naive (1 - MAE/MAE_naive)": 0.116,
+  "RMSE_min": 20.57,
+  "bias_min (+ = over-predicts)": 0.36,
+  "relative_MAE (MAE / mean wait)": 0.237,
+  "median_abs_error_min": 8.82,
+  "within_pm5min_model": 0.322,
+  "within_pm5min_naive": 0.342,
+  "within_pm10min_model": 0.545,
+  "within_pm10min_naive": 0.523,
+  "within_pm15min_model": 0.694,
+  "within_pm15min_naive": 0.657,
+  "share_below_P10 (target 0.10)": 0.097,
+  "share_below_P50 (target 0.50)": 0.525,
+  "share_below_P90 (target 0.90)": 0.905,
+  "coverage_P10_P90 (target 0.80)": 0.807
+}

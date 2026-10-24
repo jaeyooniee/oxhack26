@@ -1,0 +1,56 @@
+{
+  "name": "queuetime-generic-v2",
+  "exported": "2026-10-24",
+  "horizon_min": 15,
+  "quantiles": [
+    0.1,
+    0.5,
+    0.9
+  ],
+  "features": [
+    "r_lag15",
+    "r_lag30",
+    "r_lag60",
+    "rel_today",
+    "hour",
+    "dow",
+    "mins_since_open",
+    "mins_to_close",
+    "frac_of_day",
+    "HOLIDAY",
+    "HOLIDAYPX",
+    "rel_week",
+    "mins_since_change"
+  ],
+  "target": "z = log1p(wait at t+h) - log1p(wait now)",
+  "to_minutes": "forecast_min = expm1(log1p(wait_now_min) + z), clipped at 0; sort the 3 quantiles",
+  "training": {
+    "train_years": [
+      2015,
+      2016,
+      2017
+    ],
+    "early_stop_year": 2018,
+    "test_year": 2019,
+    "cold_start_share": 0.3,
+    "data": "TouringPlans Disney World wait times via github.com/LucyMcGowan/touringplans"
+  },
+  "test_2019": {
+    "n": 258350,
+    "MAE_persistence": 6.85,
+    "MAE_model": 6.61,
+    "pinball_P50": 3.304,
+    "coverage_P10_P90": 0.812,
+    "interval_width": 24.08,
+    "within_pm10": 0.784
+  },
+  "test_2019_cold_start_no_7day_history": {
+    "n": 258350,
+    "MAE_persistence": 6.85,
+    "MAE_model": 6.69,
+    "pinball_P50": 3.346,
+    "coverage_P10_P90": 0.815,
+    "interval_width": 25.12,
+    "within_pm10": 0.78
+  }
+}

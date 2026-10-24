@@ -1,0 +1,32 @@
+{
+  "valid_2018": {
+    "n": 219005,
+    "MAE_persistence": 15.51,
+    "MAE_model": 12.37,
+    "pinball_P50": 6.184,
+    "coverage_P10_P90": 0.814,
+    "interval_width": 44.18,
+    "within_pm5": 0.32,
+    "within_pm10": 0.552
+  },
+  "test_2019": {
+    "n": 240867,
+    "MAE_persistence": 15.24,
+    "MAE_model": 12.06,
+    "pinball_P50": 6.032,
+    "coverage_P10_P90": 0.812,
+    "interval_width": 42.87,
+    "within_pm5": 0.336,
+    "within_pm10": 0.569
+  },
+  "holdout_2021_jan_aug": {
+    "n": 57419,
+    "MAE_persistence": 8.04,
+    "MAE_model": 7.98,
+    "pinball_P50": 3.989,
+    "coverage_P10_P90": 0.849,
+    "interval_width": 33.16,
+    "within_pm5": 0.45,
+    "within_pm10": 0.705
+  }
+}

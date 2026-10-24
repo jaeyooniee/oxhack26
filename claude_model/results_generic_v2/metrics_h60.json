@@ -1,0 +1,78 @@
+{
+  "horizon_min": 60,
+  "v1": {
+    "valid_2018": {
+      "n": 219005,
+      "MAE_persistence": 15.51,
+      "MAE_model": 13.76,
+      "pinball_P50": 6.88,
+      "coverage_P10_P90": 0.813,
+      "interval_width": 49.09,
+      "within_pm5": 0.31,
+      "within_pm10": 0.531
+    },
+    "test_2019": {
+      "n": 240867,
+      "MAE_persistence": 15.24,
+      "MAE_model": 13.48,
+      "pinball_P50": 6.738,
+      "coverage_P10_P90": 0.809,
+      "interval_width": 47.71,
+      "within_pm5": 0.322,
+      "within_pm10": 0.545
+    },
+    "holdout_2021_jan_aug": {
+      "n": 57419,
+      "MAE_persistence": 8.04,
+      "MAE_model": 10.63,
+      "pinball_P50": 5.317,
+      "coverage_P10_P90": 0.836,
+      "interval_width": 41.43,
+      "within_pm5": 0.424,
+      "within_pm10": 0.658
+    }
+  },
+  "v2": {
+    "valid_2018": {
+      "n": 219005,
+      "MAE_persistence": 15.51,
+      "MAE_model": 12.37,
+      "pinball_P50": 6.184,
+      "coverage_P10_P90": 0.814,
+      "interval_width": 44.18,
+      "within_pm5": 0.32,
+      "within_pm10": 0.552
+    },
+    "test_2019": {
+      "n": 240867,
+      "MAE_persistence": 15.24,
+      "MAE_model": 12.06,
+      "pinball_P50": 6.032,
+      "coverage_P10_P90": 0.812,
+      "interval_width": 42.87,
+      "within_pm5": 0.336,
+      "within_pm10": 0.569
+    },
+    "holdout_2021_jan_aug": {
+      "n": 57419,
+      "MAE_persistence": 8.04,
+      "MAE_model": 7.98,
+      "pinball_P50": 3.989,
+      "coverage_P10_P90": 0.849,
+      "interval_width": 33.16,
+      "within_pm5": 0.45,
+      "within_pm10": 0.705
+    }
+  },
+  "loro_2019_weighted_mean": {
+    "MAE_persistence": 15.151,
+    "MAE_v1_zero_shot": 13.876,
+    "cov_v1_zero_shot": 0.796,
+    "MAE_v1_adapted_7d": 13.224,
+    "cov_v1_adapted_7d": 0.804,
+    "MAE_v2_zero_shot": 12.407,
+    "cov_v2_zero_shot": 0.803,
+    "MAE_v2_adapted_7d": 12.044,
+    "cov_v2_adapted_7d": 0.803
+  }
+}
