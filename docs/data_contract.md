@@ -57,10 +57,12 @@ Fields used by `model/forecast.py`: `timestamp`, `wait_now_min` (required), `wai
 Optional fields when `ingest/state.py --smooth` is on (Kalman / Bayesian, `model/live/`):
 `queue_length_sd`, `arrival_rate_per_min`, `arrival_rate_ci80`, `service_rate_ci80`,
 `wait_now_ci80_min` ([P10, P90]), `smoothing`. Readers must ignore fields they don't know.
-`wait_instant_min` = queue_length / service_rate_per_min (Little's law), and `wait_now_min` = its
-trailing 5-minute average: the venue's equivalent of Disney's (staff-smoothed) posted wait.
-That is why the Disney-trained model can take `wait_now_min` as input. Also present when they
-apply: `rush` (name from data/rushes.json) and `board_resets` (Arduino resets stitched so far).
+`wait_instant_min` = queue_length / service_rate_per_min (Little's law), and `wait_now_min` = the
+median of its last 3 one-minute values: the venue's equivalent of Disney's (staff-smoothed)
+posted wait. That is why the Disney-trained model can take `wait_now_min` as input.
+`status`: `open`, or `closed` outside the rush's window (30 min before opening to 15 min after
+closing) when nobody is queueing; then `next_rush` = `{"name", "open"}` if a schedule is used.
+Also present when they apply: `rush` (name from data/rushes.json) and `board_resets`.
 
 ## 5. `data/live/prediction.json` (written by `agent/queue_agent.py`)
 ```json
@@ -80,7 +82,8 @@ apply: `rush` (name from data/rushes.json) and `board_resets` (Arduino resets st
   "checked_at": "2026-10-24T18:07:41"
 }
 ```
-`recommendation` is one of `go_now`, `wait`, `unknown`. The LEDs map these to green / amber / off.
+`recommendation` is one of `go_now`, `wait`, `unknown`, `closed` (then `forecasts` is empty).
+The LEDs map these to green / amber / off / off.
 `timestamp` is the queue state's time; `generated_at` when the recommendation was made;
 `checked_at` the agent's heartbeat (rewritten every `--watch` interval). The logger turns the
 LEDs off when `checked_at` is more than 60 s old.

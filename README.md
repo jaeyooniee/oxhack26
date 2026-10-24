@@ -111,14 +111,23 @@ Leave all four running all night: the logger reconnects if the board resets or i
    `data/rushes.json` (no restart needed). `state.py` prints `rush: <name>` when it switches; check it.
 2. **Ultrasonic** (once, at the food point, logger running): with nobody queueing run
    `python ingest/calibrate_ultrasonic.py --empty`, then with N people standing in line
-   `python ingest/calibrate_ultrasonic.py --people N`. Restart `state.py --smooth` to pick it up.
-   It is the only thing that corrects beam drift *during* a busy rush (drift is reset to 0
-   automatically once the queue goes quiet for 3 minutes).
+   `python ingest/calibrate_ultrasonic.py --people N`. `state.py` picks it up on its next cycle.
+   Beam drift (the exit beam missing people) is only reset when another sensor proves nobody
+   is there: the calibrated ultrasonic for 1 min or the camera for 2 min (each only after it has
+   seen someone, so a dead sensor never counts), or after closing time. A short queue standing
+   still before the food comes out is never wiped. Without ultrasonic or camera, up to 3
+   phantom people can stay on screen until closing.
 3. **Hand count:** someone presses the button for every person served for 20 minutes.
 4. **After the rush:** `cp data/live/run.csv data/replay/<rush>_run.csv`, then check the forecast:
    `python model/backtest.py data/replay/<rush>_run.csv`. After two rushes, calibrate the bands:
    `python model/backtest.py data/replay/dinner_run.csv data/replay/midnight_run.csv --save`
    and check on the next one with `--check`.
+5. **Between rushes** the dashboard says *Closed* (with the next rush) and the LEDs are off.
+   If the LEDs go off or the dashboard says *No update from the agent* during a rush, a
+   process has stopped: restart it.
+
+Tests: `python tests/test_pipeline.py` (33 checks, about 30 s, includes the dashboard).
+
 Extras (each optional, each its own terminal):
 ```
 python app/alerts.py --watch 5                  # reads the recommendation aloud (ElevenLabs, else laptop voice)

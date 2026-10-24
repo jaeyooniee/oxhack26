@@ -10,7 +10,8 @@
 4. **State**: `ingest/state.py` turns cumulative counts into arrival rate λ, service rate μ,
    queue length L and wait W = L / μ, and writes `data/live/queue_state.json`.
    The live Kalman / Bayesian model (`model/live/`) smooths these and gives error bars.
-   Board resets are stitched, beam drift is reset when the queue goes quiet, and each rush's
+   Board resets are stitched, beam drift is reset only when the ultrasonic or camera proves the
+   queue is empty (or after closing), and each rush's
    opening/closing times come from `data/rushes.json`.
 5. **Forecast**: `model/forecast.py` feeds the recent wait history into the Disney-trained
    generic v2 model and returns P10 / P50 / P90 for each horizon.

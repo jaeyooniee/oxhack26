@@ -28,7 +28,7 @@ import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from ingest.state import compute_state, load_run, load_schedule, resolve_rush, rush_window, wait_series  # noqa: E402
+from ingest.state import compute_state, load_run, load_schedule, resolve_rush, state_and_history  # noqa: E402
 from model import forecast as fc  # noqa: E402
 
 TARGET = 0.8
@@ -37,14 +37,16 @@ TARGET = 0.8
 def run(df, venue_open, venue_close, live=None, start_after_min=10, calibrated=False):
     """One row per (minute, horizon): forecast quantiles, wait now and the actual wait later."""
     end = df.index[-1]
-    opened, _ = rush_window(end.to_pydatetime(), venue_open, venue_close)
-    rush = df[df.index >= pd.Timestamp(opened) - timedelta(minutes=30)]
-    actual = wait_series(rush, end)["wait_min"]
+    _, history = state_and_history(df, end, venue_open, venue_close, live=live)
+    actual = history["wait_min"]  # same rush window and drift handling as the live state
     horizons = fc.available_horizons()
     rows = []
-    t = rush.index[0].ceil("min") + timedelta(minutes=start_after_min)
+    t = history.index[0].ceil("min") + timedelta(minutes=start_after_min)
     while t + timedelta(minutes=min(horizons)) <= end:
         state = compute_state(df, t, venue_open, venue_close, live=live)
+        if state["status"] == "closed":
+            t += timedelta(minutes=1)
+            continue
         for f in fc.forecast(state, calibrated=calibrated):
             target = t + timedelta(minutes=f["horizon_min"])
             if target <= end:

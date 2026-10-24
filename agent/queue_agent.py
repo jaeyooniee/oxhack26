@@ -16,6 +16,7 @@ Usage:
 import argparse
 import functools
 import json
+import math
 import os
 import re
 import sys
@@ -101,12 +102,18 @@ def _allowed_numbers(results: list) -> set[float]:
 
 
 def _explanation_ok(text: str, allowed: set[float], times: set[str]) -> bool:
-    """True if every number/time in the text came from a tool result (±0.5)."""
+    """True if every number/time in the text came from a tool result: a decimal must equal a tool
+    value rounded to the same precision ("6.9"), a whole number must be a tool value rounded down
+    or up ("about 7" for 6.9), a time must be one of `times`."""
     for tok in re.findall(r"\d{1,2}:\d{2}|\d+(?:\.\d+)?", text):
         if ":" in tok:
             if tok.zfill(5) not in times:
                 return False
-        elif not any(abs(float(tok) - a) <= 0.5 for a in allowed):
+        elif "." in tok:
+            d = len(tok.split(".")[1])
+            if not any(abs(round(a, d) - float(tok)) < 1e-9 for a in allowed):
+                return False
+        elif not any(int(tok) in (math.floor(a), math.ceil(a)) for a in allowed):
             return False
     return True
 
@@ -157,6 +164,8 @@ def gemini_decision(state: dict, fcs: list[dict], user_question: str | None = No
         raise ValueError(f"'wait' until {best_time} saves only {saved} min (< {MIN_SAVING_MIN})")
     explanation = str(reply.get("explanation", "")).strip()
     times = set(table) | {now_hhmm, state["venue_open"], state["venue_close"]}
+    # savings per slot (computed here, so Gemini may say "save about 4 minutes")
+    results.append([float(state["wait_now_min"]) - s["expected_wait_min"] for s in table.values()])
     if not explanation or not _explanation_ok(explanation, _allowed_numbers(results), times):
         raise ValueError(f"explanation quotes numbers not from tools: {explanation!r}")
     return {"recommendation": rec, "best_time": best_time, "minutes_saved": saved,
@@ -167,7 +176,8 @@ def run_once(state: dict | None = None, use_gemini: bool = True, user_question: 
              out: Path | None = PREDICTION_JSON, max_age_s: float | None = None) -> dict:
     """Build prediction.json for the given (or latest) state; write it unless out is None."""
     state = state or tools.get_queue_state()
-    fcs = forecast(state)
+    closed = state.get("status") == "closed"
+    fcs = [] if closed else forecast(state)
     made = datetime.now().isoformat(timespec="seconds")
     pred = {"timestamp": state["timestamp"], "generated_at": made, "checked_at": made,
             "wait_now_min": state["wait_now_min"], "forecasts": fcs}
@@ -175,6 +185,10 @@ def run_once(state: dict | None = None, use_gemini: bool = True, user_question: 
     if max_age_s is not None and age > max_age_s:
         pred.update(recommendation="unknown", best_time=None, minutes_saved=0,
                     explanation=f"No fresh sensor data for {age / 60:.0f} min.", source="stale")
+    elif closed:
+        nxt = state.get("next_rush")
+        pred.update(recommendation="closed", best_time=None, minutes_saved=0, source="schedule",
+                    explanation="The food point is closed." + (f" Next: {nxt['name']} at {nxt['open']}." if nxt else ""))
     else:
         decision, source = None, "model:generic_v2 + rules"
         if use_gemini and os.environ.get("GEMINI_API_KEY"):
@@ -213,7 +227,8 @@ def main() -> None:
             key = (ts.date(), ts.hour, ts.minute // 5)
             wait = float(state["wait_now_min"])
             stale = args.watch and (datetime.now() - ts).total_seconds() > STALE_S
-            changed = key != last_key or last_wait is None or abs(wait - last_wait) > 2
+            changed = (key != last_key or last_wait is None or abs(wait - last_wait) > 2
+                       or (state.get("status") == "closed") != (last_rec == "closed"))
             if changed or (stale and last_rec != "unknown"):
                 pred = run_once(state, not args.no_gemini, args.question, args.out,
                                 STALE_S if args.watch else None)

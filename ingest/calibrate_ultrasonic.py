@@ -20,7 +20,10 @@ from ingest.state import RUN_CSV, ULTRASONIC_JSON as CALIBRATION, load_run  # no
 
 
 def median_distance(run: Path, seconds: int) -> float:
-    df = load_run(run)
+    try:
+        df = load_run(run)
+    except (OSError, ValueError) as e:
+        raise SystemExit(f"cannot read {run} ({e}): start ingest/logger.py first")
     d = df[df.index >= df.index[-1] - pd.Timedelta(seconds=seconds)]["dist_cm"]
     d = d[d > 0]  # -1 = no echo
     if len(d) < seconds // 3:

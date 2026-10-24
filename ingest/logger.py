@@ -41,15 +41,21 @@ def led_command(prediction: dict | None, now: datetime | None = None) -> str:
 
     'O' as well when the agent's heartbeat (checked_at) is older than PREDICTION_MAX_AGE_S, so the
     LEDs never show an old recommendation after the agent stops."""
-    if not prediction:
+    age = prediction_age_s(prediction, now)
+    if age is None or age > PREDICTION_MAX_AGE_S:
         return "O"
+    return LEDS.get(prediction.get("recommendation"), "O")
+
+
+def prediction_age_s(prediction: dict | None, now: datetime | None = None) -> float | None:
+    """Seconds since the agent last confirmed this prediction (checked_at), None if unknown."""
+    if not prediction:
+        return None
     try:
         checked = datetime.fromisoformat(prediction.get("checked_at") or prediction["generated_at"])
     except (KeyError, TypeError, ValueError):
-        return "O"
-    if ((now or datetime.now()) - checked).total_seconds() > PREDICTION_MAX_AGE_S:
-        return "O"
-    return LEDS.get(prediction.get("recommendation"), "O")
+        return None
+    return ((now or datetime.now()) - checked).total_seconds()
 
 
 def csv_row(d: dict, now: datetime | None = None) -> str:

@@ -11,11 +11,10 @@ Panels: recommendation, live queue numbers (with 80% range when Kalman smoothing
 wait history + forecast band (P10-P90, P50), sensor accuracy (beams vs hand count vs camera).
 """
 import argparse
-import json
 import os
 import sys
 import time
-from datetime import datetime, timedelta
+import traceback
 from pathlib import Path
 
 import altair as alt
@@ -25,14 +24,15 @@ import streamlit as st
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from agent.queue_agent import run_once  # noqa: E402
-from ingest.state import (PRE_OPEN_MIN, compute_state, load_run, load_schedule, posted,  # noqa: E402
-                          resolve_rush, rush_window, wait_series)
+from ingest.state import (load_camera, load_run, load_schedule, load_ultrasonic, next_rush,  # noqa: E402
+                          read_json, resolve_rush, state_and_history)
+from ingest.logger import PREDICTION_MAX_AGE_S, prediction_age_s  # noqa: E402
 from model.forecast import calibration  # noqa: E402
-from model.live.kalman import run_model  # noqa: E402
 
 LIVE = ROOT / "data" / "live"
 REFRESH_S = 2
-CARD = {"go_now": ("#1b8a3a", "Go now"), "wait": ("#c77700", "Wait"), "unknown": ("#666666", "No recommendation")}
+CARD = {"go_now": ("#1b8a3a", "Go now"), "wait": ("#c77700", "Wait"), "closed": ("#4a5260", "Closed"),
+        "unknown": ("#666666", "No recommendation")}
 
 
 def parse_args():
@@ -60,13 +60,6 @@ def load(path: Path) -> pd.DataFrame | None:
     return _load(str(path), path.stat().st_mtime) if path.exists() else None
 
 
-def read_json(path: Path) -> dict | None:
-    try:
-        return json.loads(path.read_text())
-    except (OSError, json.JSONDecodeError):  # missing, half-written or locked (Windows)
-        return None
-
-
 def recommendation_card(pred: dict | None):
     rec = (pred or {}).get("recommendation", "unknown")
     color, title = CARD.get(rec, CARD["unknown"])
@@ -85,7 +78,7 @@ def recommendation_card(pred: dict | None):
 def metrics(state: dict):
     c = st.columns(5)
     c[0].metric("Wait now (min)", f"{state['wait_now_min']:g}",
-                help="5-minute average, like a posted wait. "
+                help="Median of the last 3 minutes, like a posted wait. "
                      f"Right this second: {state.get('wait_instant_min', state['wait_now_min']):g} min.")
     c[1].metric("In queue", state["queue_length"])
     c[2].metric("Arrived (5 min)", state["arrivals_last_5m"])
@@ -123,7 +116,7 @@ def forecast_chart(history: pd.DataFrame, now: pd.Timestamp, pred: dict | None,
     layers.append(alt.Chart(pd.DataFrame({"time": [now]})).mark_rule(color="#888").encode(x="time:T"))
     st.altair_chart(alt.layer(*layers).properties(height=320), width="stretch")
     cal = calibration()
-    note = ("Red: measured wait (5-min average). Blue: forecast P50 (dashed) and P10-P90 band, "
+    note = ("Red: measured wait (median of the last 3 min). Blue: forecast P50 (dashed) and P10-P90 band, "
             + (f"widened to cover 80% on {len(cal['source'])} recorded rush(es)." if cal else
                "as trained on Disney: not yet checked on this queue (model/backtest.py)."))
     st.caption(note + (" Grey dotted: what actually happened next." if actual is not None else ""))
@@ -145,12 +138,6 @@ def accuracy_panel(df: pd.DataFrame, history: pd.DataFrame, cam: pd.DataFrame | 
             st.line_chart(both)
             gap = (both.iloc[:, 0] - both.iloc[:, 1]).abs().mean()
             st.write(f"Sensors vs camera: mean difference **{gap:.1f} people** per minute.")
-
-
-def history_start(state: dict) -> pd.Timestamp:
-    """First row of the rush the state belongs to (same window as ingest/state.py)."""
-    opened, _ = rush_window(datetime.fromisoformat(state["timestamp"]), state["venue_open"], state["venue_close"])
-    return pd.Timestamp(opened - timedelta(minutes=PRE_OPEN_MIN))
 
 
 def replay_clock(df: pd.DataFrame) -> pd.Timestamp:
@@ -218,21 +205,26 @@ def main():
             st.error(f"Replay file not found: {args.replay}")
             return
         show_actual, use_gemini, smooth = replay_sidebar(df_full, args)
-        live = {"us_empty_cm": args.us_empty, "us_cm_per_person": args.us_cm_per_person} if smooth else None
+        live = {} if smooth else None
+        us = ({"us_empty_cm": args.us_empty, "us_cm_per_person": args.us_cm_per_person}
+              if args.us_empty and args.us_cm_per_person else None)
+        cam_full = load_camera(args.camera) if args.camera else None
     else:
         st.sidebar.header("Live")
         st.sidebar.caption("Reads data/live/. No sensor? Run with `-- --replay data/sample/fake_rush_run.csv`.")
 
-    @st.fragment(run_every=REFRESH_S)
-    def body():
+    def render():
         if args.replay:
             now = replay_clock(df_full)
             df = df_full[df_full.index <= now]
-            r = ({"name": None, "open": args.venue_open, "close": args.venue_close} if args.venue_open
-                 else resolve_rush(now.to_pydatetime(), load_schedule()) or {"name": None, "open": None, "close": None})
-            state = compute_state(df, now, r["open"], r["close"], live=live, rush=r["name"])
-            df = df[df.index >= history_start(state)]
-            cam = load(args.camera) if args.camera else None
+            schedule = [] if args.venue_open else load_schedule()
+            r = (resolve_rush(now.to_pydatetime(), schedule) if schedule
+                 else {"name": None, "open": args.venue_open, "close": args.venue_close})
+            cam = cam_full[cam_full.index <= now] if cam_full is not None else None
+            state, history = state_and_history(df, now, r["open"], r["close"], live=live, rush=r["name"],
+                                               ultrasonic=us, camera=cam)
+            if state["status"] == "closed" and schedule:
+                state["next_rush"] = next_rush(now.to_pydatetime(), schedule)
             pred = replay_prediction(state, use_gemini)
             mode = f"REPLAY {st.session_state.speed}x" + (" (paused)" if st.session_state.paused_at else "")
         else:
@@ -244,27 +236,39 @@ def main():
                         "agent/queue_agent.py --watch, or run the dashboard in replay mode.")
                 return
             now = pd.Timestamp(state["timestamp"])
-            df = df[(df.index >= history_start(state)) & (df.index <= now)]
-            cam = load(LIVE / "camera.csv")
+            age = prediction_age_s(pred)
+            if age is None or age > PREDICTION_MAX_AGE_S:  # same rule as the LEDs
+                pred = {**(pred or {}), "recommendation": "unknown",
+                        "explanation": "No update from the agent " + (f"for {age / 60:.0f} min" if age else "yet")
+                        + ": is agent/queue_agent.py --watch running?"}
+            df = df[df.index <= now]
+            cam = load_camera(LIVE / "camera.csv")
+            # same inputs as ingest/state.py, so the chart matches the numbers above it
+            _, history = state_and_history(df, now, state["venue_open"], state["venue_close"],
+                                           live={} if "smoothing" in state else None,
+                                           ultrasonic=load_ultrasonic(), camera=cam)
             mode = "LIVE"
+        df = df[df.index >= history.index[0] - pd.Timedelta(minutes=1)]
 
         st.markdown(f"### ⏱ QueueTime · food point &nbsp; <span style='opacity:.6;font-size:1rem'>"
                     f"{mode} · {now:%H:%M:%S}</span>", unsafe_allow_html=True)
         recommendation_card(pred)
         metrics(state)
-        history = wait_series(df, now)
-        if "smoothing" in state:  # same Kalman track the state was computed from
-            us = state["smoothing"].endswith("ultrasonic")
-            history = run_model(df, now, grid=history.index,
-                                us_empty_cm=args.us_empty if us else None,
-                                us_cm_per_person=args.us_cm_per_person if us else None)[1]
-            history["wait_min"] = posted(history["wait_min"])
         actual = None
         if args.replay and show_actual:
-            future = wait_series(df_full[df_full.index >= df.index[0]], df_full.index[-1])
+            _, future = state_and_history(df_full, df_full.index[-1], r["open"], r["close"], live=live,
+                                          ultrasonic=us, camera=cam_full)
             actual = future[(future.index >= now) & (future.index <= now + pd.Timedelta(minutes=60))]
         forecast_chart(history, now, pred, actual)
         accuracy_panel(df, history, cam)
+
+    @st.fragment(run_every=REFRESH_S)
+    def body():
+        try:
+            render()
+        except Exception as e:  # keep refreshing through a bad file or a bug; show it, don't die
+            st.error(f"Dashboard error (still refreshing): {e}")
+            traceback.print_exc()
 
     body()
     repo = os.environ.get("REPO_URL")
