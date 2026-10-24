@@ -609,6 +609,132 @@ def test_dashboard_replay_renders_every_stage():
         sys.argv = argv
 
 
+def _serve(source):
+    """Start app/server.py's handler on a free port in a thread; returns (base url, server)."""
+    import threading
+    from http.server import ThreadingHTTPServer
+    from app import server as srv
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), srv.make_handler(source))
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    return f"http://127.0.0.1:{httpd.server_address[1]}", httpd
+
+
+def _get(url, data=None):
+    import urllib.error
+    import urllib.request
+    req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"} if data else {})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            return r.status, r.headers.get("Content-Type", ""), r.read()
+    except urllib.error.HTTPError as e:
+        return e.code, e.headers.get("Content-Type", ""), e.read()
+
+
+def test_app_server_static_files_and_replay_api():
+    from app import server as srv
+    base, httpd = _serve(srv.Source(ROOT / "data/sample/fake_rush_run.csv", 30))
+    try:
+        for path, ctype in [("/", "text/html"), ("/phone", "text/html"), ("/qt.js", "javascript"), ("/site.css", "text/css"),
+                            ("/terms", "text/html"), ("/privacy", "text/html"),
+                            ("/sw.js", "javascript"), ("/manifest.webmanifest", "manifest+json"),
+                            ("/icons/icon-192.png", "image/png"), ("/icons/icon-512.png", "image/png"), ("/icons/icon.svg", "svg")]:
+            code, ct, body = _get(base + path)
+            assert code == 200 and ctype in ct and body, (path, code, ct)
+        manifest = json.loads(_get(base + "/manifest.webmanifest")[2])
+        assert manifest["start_url"] == "/phone" and any(i["sizes"] == "512x512" for i in manifest["icons"])
+        for bad in ("/../ingest/state.py", "/%2e%2e/README.md", "/app/server.py", "/web/qt.js", "/data/live/run.csv", "/api/nope"):
+            assert _get(base + bad)[0] == 404, bad
+        # the pages only reference files the server actually serves
+        for page in ("/", "/phone", "/terms", "/privacy"):
+            html = _get(base + page)[2].decode()
+            import re
+            for ref in re.findall(r'(?:href|src)="(/[^"]*)"', html):
+                assert ref in srv.STATIC, (page, ref)
+        # house rules for every page and the app code: no em dashes, no banned fonts, no rounded
+        # corners, shadows, gradients or animation; every page links terms and privacy
+        for path in ("/", "/phone", "/terms", "/privacy", "/site.css", "/qt.js"):
+            text = _get(base + path)[2].decode()
+            for banned in ("—", "Inter", "Geist", "Space Grotesk", "border-radius: 1", "box-shadow",
+                           "linear-gradient", "radial-gradient", "transition", "@keyframes", "animation"):
+                assert banned not in text, (path, banned)
+        for page in ("/", "/phone"):
+            html = _get(base + page)[2].decode()
+            assert 'href="/terms"' in html and 'href="/privacy"' in html, page
+            assert 'class="web loading"' in html or 'class="phone loading"' in html, (page, "no skeleton state")
+        assert _get(base + "/api/replay", json.dumps({"action": "jump", "minute": 25}).encode())[0] == 200
+        assert _get(base + "/api/replay", json.dumps({"action": "pause"}).encode())[0] == 200
+        time.sleep(1.1)
+        code, ct, body = _get(base + "/api/snapshot")
+        snap = json.loads(body)
+        assert code == 200 and "application/json" in ct
+        assert snap["mode"] == "replay" and snap["status"] == "ok" and snap["replay"]["paused"]
+        assert snap["state"]["timestamp"].startswith("2026-10-24T18:25"), snap["state"]["timestamp"]
+        assert snap["prediction"]["recommendation"] in ("go_now", "wait") and snap["history"] and snap["sensors"]
+        if snap["prediction"]["recommendation"] == "wait":
+            assert snap["best_slot"]["slot"] == snap["prediction"]["best_time"]
+            assert 0 <= snap["best_slot"]["prob_wait_over_max"] <= 1
+        for bad in ({"action": "jump", "minute": 999}, {"action": "explode"}, [1, 2], "x" * 2000):
+            assert _get(base + "/api/replay", json.dumps(bad).encode())[0] == 400, bad
+        assert _get(base + "/api/replay", b"{not json")[0] == 400
+    finally:
+        httpd.shutdown()
+
+
+def test_app_server_live_states_and_broken_files():
+    from app import server as srv
+    live = TMP / "live_app"
+    live.mkdir(exist_ok=True)
+    for f in live.iterdir():
+        f.unlink()
+    real_live = srv.LIVE
+    srv.LIVE = live
+    base, httpd = _serve(srv.Source())
+    snap = lambda: (time.sleep(1.05), json.loads(_get(base + "/api/snapshot")[2]))[1]  # noqa: E731
+    try:
+        s = snap()
+        assert s["status"] == "no_data" and s["mode"] == "live", s
+        (live / "queue_state.json").write_text('{"timestamp": "2026-10-24T18:0')  # half-written
+        assert snap()["status"] == "no_data"
+        # a fresh state + prediction, re-stamped to now
+        now = datetime.now().replace(microsecond=0)
+        ev = [((now - timedelta(minutes=20) + timedelta(seconds=30 * k)).isoformat(), "in") for k in range(30)]
+        ev += [((now - timedelta(minutes=15) + timedelta(seconds=40 * k)).isoformat(), "serve") for k in range(15)]
+        df = build((now - timedelta(minutes=25)).isoformat(), now.isoformat(), ev, "live_app_run")
+        (live / "run.csv").write_text((TMP / "live_app_run.csv").read_text())
+        o, c = (now - timedelta(minutes=20)).strftime("%H:%M"), (now + timedelta(minutes=60)).strftime("%H:%M")
+        st = S.compute_state(df, None, o, c, rush="dinner")
+        S.write_json(st, live / "queue_state.json")
+        S.write_json(qa.run_once(st, use_gemini=False, out=None), live / "prediction.json")
+        s = snap()
+        assert s["status"] == "ok" and s["prediction"]["recommendation"] in ("go_now", "wait"), s
+        assert s["history"] and s["sensors"]["in"] == 30 and s["heartbeat_age_s"] < 60
+        json.dumps(s, allow_nan=False)
+        # agent stopped 3 min ago
+        p = json.loads((live / "prediction.json").read_text())
+        p["checked_at"] = p["generated_at"] = (now - timedelta(minutes=3)).isoformat(timespec="seconds")
+        S.write_json(p, live / "prediction.json")
+        s = snap()
+        assert s["status"] == "stale" and s["prediction"]["recommendation"] == "unknown", s
+        # sensor stopped 10 min ago
+        S.write_json(qa.run_once(st, use_gemini=False, out=None), live / "prediction.json")
+        S.write_json(dict(st, timestamp=(now - timedelta(minutes=10)).isoformat(timespec="seconds")), live / "queue_state.json")
+        s = snap()
+        assert s["status"] == "stale" and "sensor" in s["message"], s
+        # run.csv garbage: still answers, with the state, just no history
+        S.write_json(st, live / "queue_state.json")
+        (live / "run.csv").write_text("this is not a csv\n\x00\x01")
+        s = snap()
+        assert s["state"] and s["history"] == [] and s["status"] in ("ok", "stale"), s
+        # state file holding JSON of the wrong shape: an error message, never a crash
+        (live / "queue_state.json").write_text("[1, 2, 3]")
+        s = snap()
+        assert s["status"] == "error" and s["message"], s
+        assert _get(base + "/api/replay", json.dumps({"action": "pause"}).encode())[0] == 400  # not in replay mode
+    finally:
+        httpd.shutdown()
+        srv.LIVE = real_live
+
+
 def run_all():
     tests = [(n, f) for n, f in globals().items() if n.startswith("test_") and callable(f)]
     failed = 0

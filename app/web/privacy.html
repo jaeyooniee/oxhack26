@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Privacy, QueueTime</title>
+<meta name="theme-color" content="#F2F1EC">
+<link rel="icon" href="/icons/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&amp;family=IBM+Plex+Mono:wght@400;500&amp;display=swap">
+<link rel="stylesheet" href="/site.css">
+</head>
+<body class="doc">
+<div class="page">
+  <header class="top"><a class="brand" href="/">QueueTime</a><span class="mono">Privacy · 24.10.2026</span></header>
+  <h1>Privacy</h1>
+  <p>QueueTime is a student project built at OxHack 2026. It measures one queue, the hackathon food point, and says when it is worth joining. This page lists everything it collects and where that goes.</p>
+
+  <h2>What the sensor records</h2>
+  <ul>
+    <li>Counts: people crossing an entry beam and an exit beam, and presses of a hand-count button.</li>
+    <li>One distance reading per second from an ultrasonic sensor (how far down the queue it can see).</li>
+    <li>The time of each reading.</li>
+  </ul>
+  <p>None of this identifies anyone. It is stored in a file on the team's laptop (data/live/run.csv).</p>
+
+  <h2>The camera</h2>
+  <p>If the camera is running, the laptop counts how many people stand inside the queue area. Only that number and the time are saved. Frames are never written to disk or sent anywhere, and nobody is recognised or tracked.</p>
+
+  <h2>This website and the phone app</h2>
+  <ul>
+    <li>No accounts, no cookies, no analytics, no advertising.</li>
+    <li>If you set a reminder, its time is stored in your own browser (local storage) and nowhere else. Cancel it, or clear your browser data, to remove it.</li>
+    <li>The laptop serving these pages sees your device's local network address while you are connected, as any web server does. It does not log it.</li>
+  </ul>
+
+  <h2>Services outside the laptop</h2>
+  <ul>
+    <li>Fonts load from Google Fonts, so Google receives your IP address when a page opens.</li>
+    <li>When a Gemini API key is set, the queue numbers (counts, waits and forecasts, never anything about you) are sent to Google's Gemini model to word the recommendation.</li>
+    <li>If the voice alert is on, its sentences are sent to ElevenLabs to be spoken. They contain queue numbers only.</li>
+  </ul>
+
+  <h2>How long data is kept</h2>
+  <p>Sensor and camera counts are kept for the length of the event to check the forecast against what happened, then deleted. Recordings used in the demo replay contain the same counts and nothing more.</p>
+
+  <h2>Questions</h2>
+  <p>Ask the QueueTime team at our table, or open an issue on the <a href="https://github.com/jaeyooniee/oxhack26">source code repository</a>.</p>
+
+  <footer class="legal mono"><a href="/">Dashboard</a><a href="/phone">Phone app</a><a href="/terms">Terms</a></footer>
+</div>
+</body>
+</html>

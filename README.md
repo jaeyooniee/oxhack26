@@ -10,7 +10,7 @@ bands. A Gemini agent turns the numbers into a decision: "go now" or "go at 18:4
 
 ```
  hardware/          ingest/              model/                 agent/              app/
- Arduino sensors -> logger.py ---------> forecast.py ---------> queue_agent.py ---> app.py (Streamlit)
+ Arduino sensors -> logger.py ---------> forecast.py ---------> queue_agent.py ---> server.py (web + phone app)
  (ultrasonic,       data/live/run.csv    (Disney-trained         (Gemini function   LEDs, voice alert
   beam, button)     state.py             generic v2 model,       calling: calls
  camera ----------> camera_count.py      P10/P50/P90)            our tools, writes
@@ -30,7 +30,7 @@ call, combines the results and explains the decision. It never invents a wait ti
 | `model/` | `forecast.py` (one call: queue state → P10/P50/P90 for 15/30/60 min), exported models in `artifacts/`, live Kalman model | S1 |
 | `claude_model/` | Training and validation on Disney data (already done, see its README) | S1 |
 | `agent/` | Gemini function-calling agent | S2 + Gemini team |
-| `app/` | Streamlit dashboard, ElevenLabs alert | S2 |
+| `app/` | `server.py` + `web/` (web dashboard and installable phone app), Streamlit dashboard (`app.py`), ElevenLabs alert | S2 |
 | `data/` | `live/` (today), `replay/` (recorded rushes), `ground_truth/`, `sample/` (fake rows for dev) | everyone |
 | `docs/` | Data contract, architecture, timeline, pitch notes, open questions | everyone |
 | `notebooks/` | Disney backtest notebook and result charts | S1 |
@@ -101,10 +101,25 @@ Live (four terminals, `--port` from `python ingest/logger.py` with no arguments)
 python ingest/logger.py --port COM3
 python ingest/state.py --smooth --watch 10      # rush times come from data/rushes.json
 python agent/queue_agent.py --watch 10          # rules only without GEMINI_API_KEY, or --no-gemini
-streamlit run app/app.py
+python app/server.py                            # web + phone app; prints the address to open
 ```
 Leave all four running all night: the logger reconnects if the board resets or is unplugged,
 `state.py` stitches the counters back together and switches rush automatically.
+
+### Web and phone app
+`python app/server.py` prints two addresses (the laptop's wifi IP, port 8000):
+- `http://<ip>:8000/` is the web dashboard (projector, judges' table).
+- `http://<ip>:8000/phone` is the phone app. Anyone on the same wifi opens it; *Add to Home
+  Screen* (iOS Share menu, Android browser menu) puts it on their phone like an app.
+- *Ping me at 18:35* beeps, vibrates and shows a full-screen alarm when the time comes, while the
+  page is open. System notifications in the background need https (browsers block them over
+  plain http on a local network), so tell people to keep the page open.
+- If Windows asks whether Python may accept connections, allow it on *private* networks, or
+  phones can't connect. Hackathon wifi that isolates devices also blocks it: then use a phone
+  hotspot from the laptop.
+- Replay for the demo backup: `python app/server.py --replay data/replay/dinner_run.csv --speed 30`;
+  the web page shows pause and jump controls.
+- The Streamlit dashboard (`streamlit run app/app.py`) still works and shows the same numbers.
 
 ### Checklist for each rush
 1. **Times:** as soon as the organisers announce it, correct the rush's `open`/`close` in
@@ -126,7 +141,7 @@ Leave all four running all night: the logger reconnects if the board resets or i
    If the LEDs go off or the dashboard says *No update from the agent* during a rush, a
    process has stopped: restart it.
 
-Tests: `python tests/test_pipeline.py` (33 checks, about 30 s, includes the dashboard).
+Tests: `python tests/test_pipeline.py` (35 checks, about 40 s, includes both dashboards and the app server).
 
 Extras (each optional, each its own terminal):
 ```
@@ -138,6 +153,7 @@ Firmware: `hardware/firmware/queue_sensor/queue_sensor.ino` (pins in `hardware/R
 
 Replay (no sensor needed; also the backup demo):
 ```
+python app/server.py --replay data/sample/fake_rush_run.csv --speed 30
 streamlit run app/app.py -- --replay data/sample/fake_rush_run.csv --speed 30
 ```
 `data/sample/fake_rush_run.csv` (+ `fake_rush_camera.csv`) is a simulated 90-minute rush

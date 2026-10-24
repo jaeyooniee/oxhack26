@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>QueueTime</title>
+<meta name="theme-color" content="#F2F1EC">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="QueueTime">
+<link rel="icon" href="/icons/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/icons/icon-192.png">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&amp;family=IBM+Plex+Mono:wght@400;500&amp;display=swap">
+<link rel="stylesheet" href="/site.css">
+<script src="/qt.js" defer></script>
+</head>
+<body class="phone loading">
+<div class="columns" aria-hidden="true"><div></div><div></div><div></div><div></div></div>
+<div class="page">
+  <header class="top">
+    <a class="brand" href="/phone">QueueTime</a>
+    <span class="mono sk" id="phone-meta">Dinner · 18:05</span>
+  </header>
+
+  <section aria-live="polite" style="padding-top: 22px;">
+    <div class="mono" style="display: flex; gap: 10px; align-items: center; font-size: 11px;">
+      <span class="marker" id="marker" aria-hidden="true" style="width: 12px; height: 12px;"></span>
+      <span class="sk" id="label">Wait, then go at</span>
+    </div>
+    <h1 class="hero sk" id="hero">18:35</h1>
+    <p class="lead sk" id="lead">Saves about 4 minutes.</p>
+  </section>
+
+  <section class="split">
+    <div>
+      <div class="mono" style="font-size: 11px;">Wait now, min</div>
+      <div class="big sk" id="m-wait">6.9</div>
+    </div>
+    <div>
+      <div class="mono" style="font-size: 11px;">Queue</div>
+      <div class="mid sk" id="m-queue">11</div>
+    </div>
+  </section>
+
+  <section class="bars">
+    <div class="mono" style="font-size: 11px;">Median forecast</div>
+    <div class="bargrid sk" id="bars" role="img" aria-label="Loading the forecast"><span>Now</span><span class="bar" style="width: 60%;"></span><span>6.9</span></div>
+    <p class="mono grey sk" id="bars-note" style="margin-top: 10px; font-size: 10px; line-height: 1.6;">Bar scale: 10 min.</p>
+  </section>
+
+  <div class="remind">
+    <button type="button" class="btn" id="remind-btn" hidden>Remind me</button>
+    <p class="mono" id="remind-status" hidden><span id="remind-text"></span> <button type="button" class="btn plain" id="remind-cancel" style="min-height: 44px;">Cancel</button></p>
+  </div>
+
+  <section class="more">
+    <p class="mono grey sk" id="working" style="line-height: 1.7;">Wait now = queue ÷ rate.</p>
+    <div class="mono after-more">Schedule</div>
+    <div class="schedule sk" id="schedule" style="margin-top: 8px;"><span>Dinner</span><span>18:00–19:30</span></div>
+    <p class="mono grey sk" id="sensor-line" style="margin-top: 16px; font-size: 11px; line-height: 1.7;">Sensor: HC-SR04 + 2 IR beams.</p>
+  </section>
+
+  <footer class="legal mono" style="margin-top: 28px;">
+    <span id="mode-label" class="grey">Loading</span>
+    <a href="/">Full dashboard</a>
+    <a href="/terms">Terms</a>
+    <a href="/privacy">Privacy</a>
+  </footer>
+</div>
+
+<div class="alarm" id="alarm" role="alertdialog" aria-modal="true" aria-labelledby="alarm-title">
+  <div class="box">
+    <div class="mono" style="display: flex; gap: 12px; align-items: center;"><span class="marker" aria-hidden="true"></span><span>Reminder</span></div>
+    <h2 class="hero" id="alarm-title">Go now</h2>
+    <p class="lead" id="alarm-text" style="font-size: 19px; margin: 18px 0 24px;"></p>
+    <button type="button" class="btn" id="alarm-dismiss">On my way</button>
+  </div>
+</div>
+</body>
+</html>

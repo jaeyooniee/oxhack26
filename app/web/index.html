@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>QueueTime, food point</title>
+<meta name="description" content="Live wait and forecast for the OxHack 2026 food queue.">
+<meta name="theme-color" content="#F2F1EC">
+<link rel="icon" href="/icons/icon.svg" type="image/svg+xml">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&amp;family=IBM+Plex+Mono:wght@400;500&amp;display=swap">
+<link rel="stylesheet" href="/site.css">
+<script src="/qt.js" defer></script>
+</head>
+<body class="web loading">
+<div class="columns" aria-hidden="true"><div></div><div></div><div></div><div></div><div></div><div></div><div></div><div></div><div></div><div></div><div></div><div></div></div>
+<div class="page">
+  <header class="top mono">
+    <a class="brand" href="/">QueueTime</a>
+    <span>01 Food point</span>
+    <span class="sk" id="rush-meta">02 Dinner 18:00–19:30</span>
+    <span class="sk" id="state-time">03 State 24.10.2026 18:05:00</span>
+    <span class="end"><span id="mode-label" class="grey">Loading</span><a href="/phone">Phone app</a></span>
+  </header>
+
+  <div class="replay mono" id="replay">
+    <span id="replay-info">Replay</span>
+    <button type="button" class="btn plain" id="replay-toggle">Pause</button>
+    <label for="replay-min">Jump to minute</label>
+    <input class="min" id="replay-min" type="number" min="0" step="1" value="0">
+    <button type="button" class="btn plain" id="replay-jump">Jump</button>
+    <span id="replay-error" role="status"></span>
+  </div>
+
+  <main>
+    <section class="primary" aria-live="polite">
+      <div class="mono" style="display: flex; gap: 16px; align-items: center;">
+        <span class="marker" id="marker" aria-hidden="true"></span>
+        <span class="sk" id="label">Recommendation: wait, then go at</span>
+      </div>
+      <div class="crop"><h1 class="hero sk" id="hero">18:35</h1></div>
+      <div class="two">
+        <p class="lead sk" id="lead">Saves about 4 minutes.</p>
+        <p class="mono grey sk" id="working">Wait now = queue ÷ rate.</p>
+      </div>
+
+      <figure>
+        <div class="axis-label mono" aria-hidden="true">Minutes of wait</div>
+        <svg id="chart" class="sk" viewBox="0 0 600 230" role="img" aria-label="Loading the forecast" font-family="IBM Plex Mono, monospace"></svg>
+        <figcaption class="mono grey" style="font-size: 11px;">Thick: measured. Dashed: median forecast. Grey: 80% range on Disney rides, 2019 holdout. Not yet validated on this queue.</figcaption>
+      </figure>
+    </section>
+
+    <aside class="side">
+      <div class="mono">Now</div>
+      <div class="rows" style="margin-top: 8px;">
+        <div><span>Wait</span><span class="v sk" id="m-wait">6.9</span></div>
+        <div><span>In queue</span><span class="v sk" id="m-queue">11</span></div>
+        <div><span>Joined / 5 min</span><span class="v sk" id="m-joined">19</span></div>
+        <div><span>Served / min</span><span class="v sk" id="m-rate">1.6</span></div>
+      </div>
+      <p class="mono grey sk" id="m-note" style="margin-top: 10px; line-height: 1.7;">Right now: 6.9 min.</p>
+
+      <div class="remind">
+        <button type="button" class="btn" id="remind-btn" hidden>Remind me</button>
+        <p class="mono" id="remind-status" hidden><span id="remind-text"></span> <button type="button" class="btn plain" id="remind-cancel">Cancel</button></p>
+      </div>
+
+      <div class="mono block-label">Schedule</div>
+      <div class="schedule sk" id="schedule" style="margin-top: 8px;"><span>Dinner</span><span>18:00–19:30</span></div>
+      <p class="mono grey sk" id="sensor-line" style="margin-top: 24px; font-size: 11px; line-height: 1.7;">Sensor: HC-SR04 + 2 IR beams + hand-count button.</p>
+      <p class="mono grey" style="margin-top: 8px; font-size: 11px; line-height: 1.7;">Judging Sun 25.10 13:00–15:45.</p>
+    </aside>
+  </main>
+
+  <footer class="legal mono">
+    <span>QueueTime, OxHack 2026</span>
+    <a href="/terms">Terms</a>
+    <a href="/privacy">Privacy</a>
+    <a href="https://github.com/jaeyooniee/oxhack26">Source code</a>
+  </footer>
+</div>
+
+<div class="alarm" id="alarm" role="alertdialog" aria-modal="true" aria-labelledby="alarm-title">
+  <div class="box">
+    <div class="mono" style="display: flex; gap: 12px; align-items: center;"><span class="marker" aria-hidden="true"></span><span>Reminder</span></div>
+    <h2 class="hero" id="alarm-title">Go now</h2>
+    <p class="lead" id="alarm-text" style="font-size: 20px; margin: 18px 0 24px;"></p>
+    <button type="button" class="btn" id="alarm-dismiss">On my way</button>
+  </div>
+</div>
+</body>
+</html>
