@@ -1,0 +1,9 @@
+{
+  "_note": "Opening and closing time of each food rush, read by ingest/state.py and the dashboard. Update a rush's times as soon as the organisers announce them. A rush may cross midnight (close earlier than open).",
+  "rushes": [
+    {"name": "dinner", "open": "18:00", "close": "19:30"},
+    {"name": "midnight", "open": "23:45", "close": "00:45"},
+    {"name": "breakfast", "open": "08:00", "close": "09:00"},
+    {"name": "lunch", "open": "12:00", "close": "13:00"}
+  ]
+}

@@ -9,7 +9,8 @@ Queue length. Kalman filter on L:
   predict  L += arrivals - served          variance += BEAM_MISS * (arrivals + served)
   measure  L_us = (empty_cm - dist_cm) / cm_per_person   (only when the ultrasonic is calibrated)
 The beams are precise per step but drift when they miss someone; the ultrasonic is noisy but
-does not drift, so together they stay honest.
+does not drift, so together they stay honest. Without a calibrated ultrasonic, a "queue" of
+DRIFT_MAX or fewer with nobody moving for IDLE_RESET_MIN is treated as drift and reset to 0.
 
 Wait. W = L / mu, with an 80% interval from sampling L ~ N(L, P) and mu ~ Gamma(a, b).
 
@@ -29,6 +30,8 @@ PRIOR_WEIGHT_MIN = 2.0  # prior is worth this many minutes of data
 BEAM_MISS = 0.05       # share of crossings a beam misses (fake queue test: measure it!)
 US_SD_PEOPLE = 1.5     # ultrasonic noise, in people
 MIN_RATE = 0.05        # floor on mu so W stays finite
+DRIFT_MAX = 3          # a "queue" this small with nobody moving for IDLE_RESET_MIN is beam drift
+IDLE_RESET_MIN = 3.0
 
 
 @dataclass
@@ -59,6 +62,7 @@ class LiveQueueModel:
     mu: GammaRate = field(default_factory=GammaRate)
     L: float = 0.0
     P: float = 1.0
+    idle_min: float = 0.0
     last: dict | None = None
 
     def update(self, t: pd.Timestamp, in_total: float, out_total: float, dist_cm: float | None = None):
@@ -85,6 +89,10 @@ class LiveQueueModel:
             k = self.P / (self.P + R)
             self.L = max(0.0, self.L + k * (z - self.L))
             self.P *= 1 - k
+        # nobody arriving or leaving for a while with only a few "people" left: beam drift
+        self.idle_min = 0.0 if arr or srv else self.idle_min + dt
+        if self.idle_min >= IDLE_RESET_MIN and self.L <= DRIFT_MAX:
+            self.L, self.P = 0.0, min(self.P, 0.25)
         self.last = {"t": t, "in": in_total, "out": out_total}
 
     def wait_mean(self) -> float:

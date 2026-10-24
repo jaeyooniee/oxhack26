@@ -122,7 +122,7 @@ def main() -> None:
     while True:
         try:
             text = phrase(json.loads(args.prediction.read_text()))
-        except (FileNotFoundError, json.JSONDecodeError):
+        except (OSError, json.JSONDecodeError):  # missing, half-written or locked (Windows)
             text = None
         if text and text != last:
             print(f"[{speak(text, args.offline)}] {text}")

@@ -26,7 +26,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from agent import tools  # noqa: E402
-from ingest.state import write_json  # noqa: E402
+from ingest.state import read_json, write_json  # noqa: E402
 from model.forecast import forecast  # noqa: E402
 
 PREDICTION_JSON = ROOT / "data" / "live" / "prediction.json"
@@ -153,6 +153,8 @@ def gemini_decision(state: dict, fcs: list[dict], user_question: str | None = No
     if rec == "wait" and best_time not in table:
         raise ValueError(f"best_time {best_time!r} is not a candidate slot")
     saved = round(float(state["wait_now_min"]) - table[best_time]["expected_wait_min"]) if rec == "wait" else 0
+    if rec == "wait" and saved < MIN_SAVING_MIN:
+        raise ValueError(f"'wait' until {best_time} saves only {saved} min (< {MIN_SAVING_MIN})")
     explanation = str(reply.get("explanation", "")).strip()
     times = set(table) | {now_hhmm, state["venue_open"], state["venue_close"]}
     if not explanation or not _explanation_ok(explanation, _allowed_numbers(results), times):
@@ -166,7 +168,8 @@ def run_once(state: dict | None = None, use_gemini: bool = True, user_question: 
     """Build prediction.json for the given (or latest) state; write it unless out is None."""
     state = state or tools.get_queue_state()
     fcs = forecast(state)
-    pred = {"timestamp": state["timestamp"], "generated_at": datetime.now().isoformat(timespec="seconds"),
+    made = datetime.now().isoformat(timespec="seconds")
+    pred = {"timestamp": state["timestamp"], "generated_at": made, "checked_at": made,
             "wait_now_min": state["wait_now_min"], "forecasts": fcs}
     age = (datetime.now() - datetime.fromisoformat(state["timestamp"])).total_seconds()
     if max_age_s is not None and age > max_age_s:
@@ -200,10 +203,12 @@ def main() -> None:
         pass
     tools.STATE_PATH = args.state
 
-    last_key = last_wait = last_rec = None
+    last_key = last_wait = last_rec = last_pred = None
     while True:
         try:
-            state = json.loads(args.state.read_text())
+            state = read_json(args.state)
+            if state is None:
+                raise FileNotFoundError(f"{args.state} missing or being written")
             ts = datetime.fromisoformat(state["timestamp"])
             key = (ts.date(), ts.hour, ts.minute // 5)
             wait = float(state["wait_now_min"])
@@ -212,10 +217,14 @@ def main() -> None:
             if changed or (stale and last_rec != "unknown"):
                 pred = run_once(state, not args.no_gemini, args.question, args.out,
                                 STALE_S if args.watch else None)
-                last_key, last_wait, last_rec = key, wait, pred["recommendation"]
+                last_key, last_wait, last_rec, last_pred = key, wait, pred["recommendation"], pred
                 print(f"{pred['timestamp']}  {pred['recommendation']:<7} {pred['best_time']}  "
                       f"[{pred['source']}] {pred['explanation']}")
-        except (FileNotFoundError, json.JSONDecodeError, KeyError) as e:
+            elif last_pred is not None and args.watch:
+                # heartbeat: the logger turns the LEDs off if this stops updating
+                last_pred["checked_at"] = datetime.now().isoformat(timespec="seconds")
+                write_json(last_pred, args.out)
+        except (OSError, json.JSONDecodeError, KeyError, ValueError) as e:
             print(f"waiting for queue state: {e}")
         if not args.watch:
             break

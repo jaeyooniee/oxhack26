@@ -99,17 +99,31 @@ cp .env.example .env      # add GEMINI_API_KEY and ELEVENLABS_API_KEY
 Live (four terminals, `--port` from `python ingest/logger.py` with no arguments):
 ```
 python ingest/logger.py --port COM3
-python ingest/state.py --open 18:00 --close 19:30 --watch 10
+python ingest/state.py --smooth --watch 10      # rush times come from data/rushes.json
 python agent/queue_agent.py --watch 10          # rules only without GEMINI_API_KEY, or --no-gemini
 streamlit run app/app.py
 ```
+Leave all four running all night: the logger reconnects if the board resets or is unplugged,
+`state.py` stitches the counters back together and switches rush automatically.
+
+### Checklist for each rush
+1. **Times:** as soon as the organisers announce it, correct the rush's `open`/`close` in
+   `data/rushes.json` (no restart needed). `state.py` prints `rush: <name>` when it switches; check it.
+2. **Ultrasonic** (once, at the food point, logger running): with nobody queueing run
+   `python ingest/calibrate_ultrasonic.py --empty`, then with N people standing in line
+   `python ingest/calibrate_ultrasonic.py --people N`. Restart `state.py --smooth` to pick it up.
+   It is the only thing that corrects beam drift *during* a busy rush (drift is reset to 0
+   automatically once the queue goes quiet for 3 minutes).
+3. **Hand count:** someone presses the button for every person served for 20 minutes.
+4. **After the rush:** `cp data/live/run.csv data/replay/<rush>_run.csv`, then check the forecast:
+   `python model/backtest.py data/replay/<rush>_run.csv`. After two rushes, calibrate the bands:
+   `python model/backtest.py data/replay/dinner_run.csv data/replay/midnight_run.csv --save`
+   and check on the next one with `--check`.
 Extras (each optional, each its own terminal):
 ```
 python app/alerts.py --watch 5                  # reads the recommendation aloud (ElevenLabs, else laptop voice)
 python ingest/camera_count.py --set-zone        # once: click the queue area's corners
 python ingest/camera_count.py --show            # head count -> data/live/camera.csv
-python ingest/state.py ... --smooth             # Kalman/Bayesian smoothing + 80% wait range
-python ingest/state.py ... --us-empty 400 --us-cm-per-person 60   # + ultrasonic fusion (calibrate!)
 ```
 Firmware: `hardware/firmware/queue_sensor/queue_sensor.ino` (pins in `hardware/README.md`).
 

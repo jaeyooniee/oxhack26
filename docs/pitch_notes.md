@@ -10,6 +10,10 @@
 - Calibration: 80% bands contain the truth 80.3% of the time.
 - Untouched 2021 holdout: 7.98 vs 8.04 min, roughly a tie. Be upfront about it.
 
+## Numbers we must NOT claim for the food queue
+- "80% bands are right 80% of the time": that is Disney. On simulated food rushes the raw bands
+  covered 20-55%; quote only what `model/backtest.py` says on the real rushes (after calibration).
+
 ## Judge questions to rehearse
 - Why Disney data for a food queue? → unit-free features + unseen-venue test.
 - What if someone walks back and forth past the sensor? → we measure the queue, check against

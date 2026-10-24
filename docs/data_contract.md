@@ -57,8 +57,10 @@ Fields used by `model/forecast.py`: `timestamp`, `wait_now_min` (required), `wai
 Optional fields when `ingest/state.py --smooth` is on (Kalman / Bayesian, `model/live/`):
 `queue_length_sd`, `arrival_rate_per_min`, `arrival_rate_ci80`, `service_rate_ci80`,
 `wait_now_ci80_min` ([P10, P90]), `smoothing`. Readers must ignore fields they don't know.
-`wait_now_min` = queue_length / service_rate_per_min (Little's law). This is the venue's
-equivalent of Disney's "posted wait", so the Disney-trained model can take it as input.
+`wait_instant_min` = queue_length / service_rate_per_min (Little's law), and `wait_now_min` = its
+trailing 5-minute average: the venue's equivalent of Disney's (staff-smoothed) posted wait.
+That is why the Disney-trained model can take `wait_now_min` as input. Also present when they
+apply: `rush` (name from data/rushes.json) and `board_resets` (Arduino resets stitched so far).
 
 ## 5. `data/live/prediction.json` (written by `agent/queue_agent.py`)
 ```json
@@ -72,10 +74,16 @@ equivalent of Disney's "posted wait", so the Disney-trained model can take it as
   "best_time": "18:40",
   "minutes_saved": 9,
   "explanation": "Queue is growing faster than it is served; it usually clears 25 min after the drop.",
-  "source": "model:generic_v2 + gemini"
+  "source": "model:generic_v2 + gemini",
+  "wait_now_min": 6.9,
+  "generated_at": "2026-10-24T18:05:21",
+  "checked_at": "2026-10-24T18:07:41"
 }
 ```
 `recommendation` is one of `go_now`, `wait`, `unknown`. The LEDs map these to green / amber / off.
+`timestamp` is the queue state's time; `generated_at` when the recommendation was made;
+`checked_at` the agent's heartbeat (rewritten every `--watch` interval). The logger turns the
+LEDs off when `checked_at` is more than 60 s old.
 
 ## 6. `data/ground_truth/hand_count_<rush>.csv`
 ```

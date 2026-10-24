@@ -3,7 +3,7 @@ numpy
 lightgbm
 matplotlib
 pyserial
-streamlit
+streamlit>=1.50  # st.fragment(run_every=...), width="stretch"
 google-genai
 python-dotenv
 opencv-python<5  # 5.x dropped the HOG person detector used as the camera fallback

@@ -17,6 +17,7 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+from ingest.state import rush_window  # noqa: E402
 from model.forecast import available_horizons, forecast  # noqa: E402
 
 STATE_PATH = Path(os.environ.get("QUEUETIME_STATE", ROOT / "data" / "live" / "queue_state.json"))
@@ -92,7 +93,6 @@ def candidate_slots(state: dict, step_min: int = 5, until_min: int | None = None
     """Clock times from now to the longest horizon (or closing time, if sooner), every step_min."""
     now = datetime.fromisoformat(state["timestamp"])
     until = until_min if until_min is not None else max(available_horizons())
-    close = datetime.combine(now.date(), datetime.strptime(state["venue_close"], "%H:%M").time())
-    if close > now:
-        until = min(until, int((close - now).total_seconds() // 60))
+    _, close = rush_window(now, state["venue_open"], state["venue_close"])  # handles 23:45-00:45
+    until = max(0, min(until, int((close - now).total_seconds() // 60)))
     return [(now + timedelta(minutes=m)).strftime("%H:%M") for m in range(0, until + 1, step_min)]

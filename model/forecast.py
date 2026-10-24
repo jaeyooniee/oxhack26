@@ -19,6 +19,7 @@ import lightgbm as lgb
 import pandas as pd
 
 ART = Path(__file__).resolve().parent / "artifacts"
+CALIBRATION_JSON = ART / "food_calibration.json"  # written by model/backtest.py --save
 DEFAULT_DAYS_TO_HOLIDAY = 14
 
 
@@ -76,15 +77,29 @@ def build_features(state: dict, features: list[str]) -> pd.DataFrame:
     return pd.DataFrame([[row[f] for f in features]], columns=features)
 
 
-def forecast(state: dict, horizons: list[int] | None = None) -> list[dict]:
-    """P10/P50/P90 wait forecasts (minutes) for each horizon."""
+def calibration() -> dict | None:
+    """Band widening factors fitted on this venue's recorded rushes, if any."""
+    try:
+        return json.loads(CALIBRATION_JSON.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def forecast(state: dict, horizons: list[int] | None = None, calibrated: bool = True) -> list[dict]:
+    """P10/P50/P90 wait forecasts (minutes) for each horizon.
+
+    If model/artifacts/food_calibration.json exists (and calibrated=True), each band is widened
+    around P50 by that horizon's factor k so it covers ~80% on this venue, not just on Disney."""
     wait = float(state["wait_now_min"])
+    ks = ((calibration() or {}).get("k") or {}) if calibrated else {}
     out = []
     for h in horizons or available_horizons():
         meta, boosters = load(h)
         x = build_features(state, meta["features"])
         z = sorted(float(b.predict(x)[0]) for b in boosters)
         p10, p50, p90 = (max(0.0, math.expm1(math.log1p(wait) + v)) for v in z)
+        k = float(ks.get(str(h), 1.0))
+        p10, p90 = max(0.0, p50 - k * (p50 - p10)), p50 + k * (p90 - p50)
         out.append({"horizon_min": h, "p10": round(p10, 1), "p50": round(p50, 1), "p90": round(p90, 1)})
     return out
 

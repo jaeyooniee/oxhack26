@@ -15,6 +15,7 @@ import json
 import os
 import sys
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import altair as alt
@@ -24,7 +25,9 @@ import streamlit as st
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from agent.queue_agent import run_once  # noqa: E402
-from ingest.state import compute_state, load_run, wait_series  # noqa: E402
+from ingest.state import (PRE_OPEN_MIN, compute_state, load_run, load_schedule, posted,  # noqa: E402
+                          resolve_rush, rush_window, wait_series)
+from model.forecast import calibration  # noqa: E402
 from model.live.kalman import run_model  # noqa: E402
 
 LIVE = ROOT / "data" / "live"
@@ -60,7 +63,7 @@ def load(path: Path) -> pd.DataFrame | None:
 def read_json(path: Path) -> dict | None:
     try:
         return json.loads(path.read_text())
-    except (FileNotFoundError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError):  # missing, half-written or locked (Windows)
         return None
 
 
@@ -81,14 +84,16 @@ def recommendation_card(pred: dict | None):
 
 def metrics(state: dict):
     c = st.columns(5)
-    c[0].metric("Wait now (min)", f"{state['wait_now_min']:g}")
+    c[0].metric("Wait now (min)", f"{state['wait_now_min']:g}",
+                help="5-minute average, like a posted wait. "
+                     f"Right this second: {state.get('wait_instant_min', state['wait_now_min']):g} min.")
     c[1].metric("In queue", state["queue_length"])
     c[2].metric("Arrived (5 min)", state["arrivals_last_5m"])
     c[3].metric("Served (5 min)", state["served_last_5m"])
     c[4].metric("Service rate", f"{state['service_rate_per_min']:g}/min")
     if "wait_now_ci80_min" in state:
         lo, hi = state["wait_now_ci80_min"]
-        st.caption(f"{state['smoothing']}: wait now is 80% likely between {lo:g} and {hi:g} min · "
+        st.caption(f"{state['smoothing']}: wait right now is 80% likely between {lo:g} and {hi:g} min · "
                    f"queue ±{state['queue_length_sd']:g} people · arrivals {state['arrival_rate_per_min']:g}/min")
 
 
@@ -117,7 +122,10 @@ def forecast_chart(history: pd.DataFrame, now: pd.Timestamp, pred: dict | None,
         tooltip=[alt.Tooltip("time:T", format="%H:%M"), alt.Tooltip("wait_min:Q", format=".1f")]))
     layers.append(alt.Chart(pd.DataFrame({"time": [now]})).mark_rule(color="#888").encode(x="time:T"))
     st.altair_chart(alt.layer(*layers).properties(height=320), width="stretch")
-    note = "Red: measured wait. Blue: forecast P50 (dashed) and 80% band."
+    cal = calibration()
+    note = ("Red: measured wait (5-min average). Blue: forecast P50 (dashed) and P10-P90 band, "
+            + (f"widened to cover 80% on {len(cal['source'])} recorded rush(es)." if cal else
+               "as trained on Disney: not yet checked on this queue (model/backtest.py)."))
     st.caption(note + (" Grey dotted: what actually happened next." if actual is not None else ""))
 
 
@@ -137,6 +145,12 @@ def accuracy_panel(df: pd.DataFrame, history: pd.DataFrame, cam: pd.DataFrame | 
             st.line_chart(both)
             gap = (both.iloc[:, 0] - both.iloc[:, 1]).abs().mean()
             st.write(f"Sensors vs camera: mean difference **{gap:.1f} people** per minute.")
+
+
+def history_start(state: dict) -> pd.Timestamp:
+    """First row of the rush the state belongs to (same window as ingest/state.py)."""
+    opened, _ = rush_window(datetime.fromisoformat(state["timestamp"]), state["venue_open"], state["venue_close"])
+    return pd.Timestamp(opened - timedelta(minutes=PRE_OPEN_MIN))
 
 
 def replay_clock(df: pd.DataFrame) -> pd.Timestamp:
@@ -214,7 +228,10 @@ def main():
         if args.replay:
             now = replay_clock(df_full)
             df = df_full[df_full.index <= now]
-            state = compute_state(df, now, args.venue_open, args.venue_close, live=live)
+            r = ({"name": None, "open": args.venue_open, "close": args.venue_close} if args.venue_open
+                 else resolve_rush(now.to_pydatetime(), load_schedule()) or {"name": None, "open": None, "close": None})
+            state = compute_state(df, now, r["open"], r["close"], live=live, rush=r["name"])
+            df = df[df.index >= history_start(state)]
             cam = load(args.camera) if args.camera else None
             pred = replay_prediction(state, use_gemini)
             mode = f"REPLAY {st.session_state.speed}x" + (" (paused)" if st.session_state.paused_at else "")
@@ -227,6 +244,7 @@ def main():
                         "agent/queue_agent.py --watch, or run the dashboard in replay mode.")
                 return
             now = pd.Timestamp(state["timestamp"])
+            df = df[(df.index >= history_start(state)) & (df.index <= now)]
             cam = load(LIVE / "camera.csv")
             mode = "LIVE"
 
@@ -240,9 +258,10 @@ def main():
             history = run_model(df, now, grid=history.index,
                                 us_empty_cm=args.us_empty if us else None,
                                 us_cm_per_person=args.us_cm_per_person if us else None)[1]
+            history["wait_min"] = posted(history["wait_min"])
         actual = None
         if args.replay and show_actual:
-            future = wait_series(df_full, df_full.index[-1])
+            future = wait_series(df_full[df_full.index >= df.index[0]], df_full.index[-1])
             actual = future[(future.index >= now) & (future.index <= now + pd.Timedelta(minutes=60))]
         forecast_chart(history, now, pred, actual)
         accuracy_panel(df, history, cam)

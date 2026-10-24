@@ -18,6 +18,7 @@ HEADER = "wall_time,ms,dist_cm,in_total,out_total,btn_total"
 FIELDS = ("ms", "dist_cm", "in", "out", "btn")
 LED_EVERY_S = 5
 LEDS = {"go_now": "G", "wait": "A"}
+PREDICTION_MAX_AGE_S = 60  # the agent rewrites prediction.json every --watch interval
 
 
 def parse_line(line: str) -> dict | None:
@@ -35,9 +36,20 @@ def parse_line(line: str) -> dict | None:
         return None
 
 
-def led_command(prediction: dict | None) -> str:
-    """Map prediction['recommendation'] to 'G' (go_now), 'A' (wait) or 'O' (unknown/missing)."""
-    return LEDS.get((prediction or {}).get("recommendation"), "O")
+def led_command(prediction: dict | None, now: datetime | None = None) -> str:
+    """Map prediction['recommendation'] to 'G' (go_now), 'A' (wait) or 'O' (unknown/missing).
+
+    'O' as well when the agent's heartbeat (checked_at) is older than PREDICTION_MAX_AGE_S, so the
+    LEDs never show an old recommendation after the agent stops."""
+    if not prediction:
+        return "O"
+    try:
+        checked = datetime.fromisoformat(prediction.get("checked_at") or prediction["generated_at"])
+    except (KeyError, TypeError, ValueError):
+        return "O"
+    if ((now or datetime.now()) - checked).total_seconds() > PREDICTION_MAX_AGE_S:
+        return "O"
+    return LEDS.get(prediction.get("recommendation"), "O")
 
 
 def csv_row(d: dict, now: datetime | None = None) -> str:
@@ -46,9 +58,10 @@ def csv_row(d: dict, now: datetime | None = None) -> str:
 
 
 def read_prediction(path: Path) -> dict | None:
+    """prediction.json, or None if missing, half-written or locked by another program (Windows)."""
     try:
         return json.loads(path.read_text())
-    except (FileNotFoundError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError):
         return None
 
 
@@ -72,28 +85,34 @@ def main() -> None:
     new_file = not args.out.exists() or args.out.stat().st_size == 0
     bad = rows = 0
     last_led_t, last_led = 0.0, None
-    with serial.Serial(args.port, args.baud, timeout=2) as ser, args.out.open("a", newline="") as f:
+    with args.out.open("a", newline="") as f:
         if new_file:
             f.write(HEADER + "\n")
         print(f"logging {args.port} -> {args.out}  (Ctrl+C to stop)")
         try:
-            while True:
-                raw = ser.readline()
-                d = parse_line(raw.decode("utf-8", errors="replace")) if raw else None
-                if d:
-                    f.write(csv_row(d) + "\n")
-                    f.flush()  # a crash loses at most one row
-                    rows += 1
-                    if rows % 60 == 0:
-                        print(f"{rows} rows  in={d['in']} out={d['out']} btn={d['btn']}  bad={bad}")
-                elif raw:
-                    bad += 1
-                if time.monotonic() - last_led_t > LED_EVERY_S:
-                    cmd = led_command(read_prediction(args.prediction))
-                    ser.write(cmd.encode())
-                    if cmd != last_led:
-                        print(f"LED -> {cmd}")
-                    last_led_t, last_led = time.monotonic(), cmd
+            while True:  # reconnect if the board is unplugged or resets; state.py stitches the counters
+                try:
+                    with serial.Serial(args.port, args.baud, timeout=2) as ser:
+                        while True:
+                            raw = ser.readline()
+                            d = parse_line(raw.decode("utf-8", errors="replace")) if raw else None
+                            if d:
+                                f.write(csv_row(d) + "\n")
+                                f.flush()  # a crash loses at most one row
+                                rows += 1
+                                if rows % 60 == 0:
+                                    print(f"{rows} rows  in={d['in']} out={d['out']} btn={d['btn']}  bad={bad}")
+                            elif raw:
+                                bad += 1
+                            if time.monotonic() - last_led_t > LED_EVERY_S:
+                                cmd = led_command(read_prediction(args.prediction))
+                                ser.write(cmd.encode())
+                                if cmd != last_led:
+                                    print(f"LED -> {cmd}")
+                                last_led_t, last_led = time.monotonic(), cmd
+                except (serial.SerialException, OSError) as e:
+                    print(f"serial error, reconnecting in 2 s: {e}")
+                    time.sleep(2)
         except KeyboardInterrupt:
             print(f"stopped: {rows} rows, {bad} broken lines")
 
