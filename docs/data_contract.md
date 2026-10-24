@@ -54,6 +54,9 @@ Fields used by `model/forecast.py`: `timestamp`, `wait_now_min` (required), `wai
 `mins_since_change`, `venue_open`, `venue_close` (required), `is_holiday`, `days_to_holiday`.
 `mins_since_change`: round the wait to the nearest 5 min first (Disney posted waits move in
 5-minute steps), then count minutes since that rounded value last changed.
+Optional fields when `ingest/state.py --smooth` is on (Kalman / Bayesian, `model/live/`):
+`queue_length_sd`, `arrival_rate_per_min`, `arrival_rate_ci80`, `service_rate_ci80`,
+`wait_now_ci80_min` ([P10, P90]), `smoothing`. Readers must ignore fields they don't know.
 `wait_now_min` = queue_length / service_rate_per_min (Little's law). This is the venue's
 equivalent of Disney's "posted wait", so the Disney-trained model can take it as input.
 

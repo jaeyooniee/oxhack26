@@ -6,6 +6,7 @@ pyserial
 streamlit
 google-genai
 python-dotenv
-ultralytics
-opencv-python
-elevenlabs
+opencv-python<5  # 5.x dropped the HOG person detector used as the camera fallback
+# Optional: YOLOv8 camera counting (better than HOG in crowds). Pulls in PyTorch; on Windows
+# it needs long paths enabled first. Install with: pip install ultralytics
+# ElevenLabs is called over its REST API (app/alerts.py), so no SDK is needed.

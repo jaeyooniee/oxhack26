@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "dashboard-replay",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "streamlit", "run", "app/app.py", "--server.headless", "true", "--server.port", "8501", "--", "--replay", "data/sample/fake_rush_run.csv", "--speed", "30", "--us-empty", "400", "--us-cm-per-person", "25"],
+      "port": 8501
+    },
+    {
+      "name": "dashboard-live",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "streamlit", "run", "app/app.py", "--server.headless", "true", "--server.port", "8502"],
+      "port": 8502
+    }
+  ]
+}

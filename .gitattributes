@@ -1,0 +1,2 @@
+# LightGBM model files must keep LF endings (CRLF breaks loading on Windows)
+model/artifacts/** -text

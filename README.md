@@ -94,3 +94,30 @@ H1 = board, H2 = build + camera, S1 = model, S2 = dashboard + Gemini.
 pip install -r requirements.txt
 cp .env.example .env      # add GEMINI_API_KEY and ELEVENLABS_API_KEY
 ```
+
+## Run it
+Live (four terminals, `--port` from `python ingest/logger.py` with no arguments):
+```
+python ingest/logger.py --port COM3
+python ingest/state.py --open 18:00 --close 19:30 --watch 10
+python agent/queue_agent.py --watch 10          # rules only without GEMINI_API_KEY, or --no-gemini
+streamlit run app/app.py
+```
+Extras (each optional, each its own terminal):
+```
+python app/alerts.py --watch 5                  # reads the recommendation aloud (ElevenLabs, else laptop voice)
+python ingest/camera_count.py --set-zone        # once: click the queue area's corners
+python ingest/camera_count.py --show            # head count -> data/live/camera.csv
+python ingest/state.py ... --smooth             # Kalman/Bayesian smoothing + 80% wait range
+python ingest/state.py ... --us-empty 400 --us-cm-per-person 60   # + ultrasonic fusion (calibrate!)
+```
+Firmware: `hardware/firmware/queue_sensor/queue_sensor.ino` (pins in `hardware/README.md`).
+
+Replay (no sensor needed; also the backup demo):
+```
+streamlit run app/app.py -- --replay data/sample/fake_rush_run.csv --speed 30
+```
+`data/sample/fake_rush_run.csv` (+ `fake_rush_camera.csv`) is a simulated 90-minute rush
+(`python ingest/fake_rush.py`). Add `--us-empty 400 --us-cm-per-person 25` and tick
+"Kalman smoothing" in the sidebar to see the error bars. Copy
+each real rush to `data/replay/<rush>_run.csv` and replay that instead.
