@@ -530,6 +530,11 @@ def test_logger_parsing():
     for bad in ['{"ms": 1, "dist_cm"', "garbage", "[1,2]", '{"ms":1}', '{"ms":"x","dist_cm":1,"in":1,"out":1,"btn":1}', ""]:
         assert parse_line(bad) is None, bad
     assert csv_row(parse_line(good), datetime(2026, 10, 24, 18, 0, 0)) == "2026-10-24T18:00:00,123456,182.4,37,31,12"
+    new = ('{"t":47000,"dist_mm":1590,"occ_frac":1.00,"served":3,"putback":0,"manual":2,'
+           '"arrivals":21,"queue":18,"lam":7.85,"wait_min":19.1}')
+    assert parse_line(new) == {"ms": 47000, "dist_cm": 159.0, "in": 21, "out": 3, "btn": 2}
+    assert parse_line(new.replace('"dist_mm":1590', '"dist_mm":-1'))["dist_cm"] == -1.0
+    assert parse_line('{"t":"x","dist_mm":1,"served":1,"manual":1,"arrivals":1}') is None
 
 
 def test_camera_zone():
