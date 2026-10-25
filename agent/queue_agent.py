@@ -37,16 +37,13 @@ from ingest.state import read_json, write_json  # noqa: E402
 from model.forecast import forecast  # noqa: E402
 
 PREDICTION_JSON = ROOT / "data" / "live" / "prediction.json"
-<<<<<<< HEAD
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")  # gemini-2.5-flash is retired for new keys
-# tried in order when a model is overloaded (503), slow (504), rate-limited (429) or retired (404)
+# tried in order when a model is overloaded (503), slow (504), rate-limited (429) or retired (404);
+# the free tier allows 20 requests/day per model, so each fallback is also a fresh quota
 GEMINI_MODELS = list(dict.fromkeys([GEMINI_MODEL] + [m.strip() for m in os.environ.get(
     "GEMINI_FALLBACK_MODELS", "gemini-3.6-flash,gemini-3.5-flash-lite").split(",") if m.strip()]))
 GEMINI_CALL_TIMEOUT_MS = 12_000  # per HTTP request: give up on a hung, overloaded model quickly
 GEMINI_BUDGET_S = 35             # whole decision, all models; then rules (heartbeat stays under the LEDs' 60 s)
-=======
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite")  # free tier: 20 requests/day per model
->>>>>>> 5bd465c0aa27bcca6d71112ac68186e13e763d59
 MAX_WAIT_MIN = 5.0     # "a short queue" for the probability tool
 MIN_SAVING_MIN = 3     # recommend waiting only if the net saving (below) is at least this much
 DELAY_COST = 0.1       # each minute you put off going must save 0.1 min of queue: 30 min later must save 3 more
