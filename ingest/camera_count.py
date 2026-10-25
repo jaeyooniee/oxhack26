@@ -159,9 +159,13 @@ def log_frame(f, wall: datetime, boxes, hists) -> None:
 
 
 def set_zone(cap) -> None:
+    deadline = time.monotonic() + 10  # an iPhone (Continuity Camera) takes a few seconds to send frames
     ok, frame = cap.read()
+    while not ok and time.monotonic() < deadline:
+        time.sleep(0.25)
+        ok, frame = cap.read()
     if not ok:
-        raise SystemExit("could not read from the camera")
+        raise SystemExit("could not read from the camera (iPhone: lock it, keep it still, or plug it in)")
     frame = resize(frame)
     pts: list[list[float]] = []
     h, w = frame.shape[:2]
