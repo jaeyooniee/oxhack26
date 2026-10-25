@@ -14,24 +14,35 @@ Usage:
   python agent/queue_agent.py --no-gemini     # rules only
 """
 import argparse
-import functools
 import json
 import math
 import os
 import re
 import sys
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+try:
+    from dotenv import load_dotenv
+    load_dotenv(ROOT / ".env")
+except ImportError:
+    pass
+
 from agent import tools  # noqa: E402
 from ingest.state import read_json, write_json  # noqa: E402
 from model.forecast import forecast  # noqa: E402
 
 PREDICTION_JSON = ROOT / "data" / "live" / "prediction.json"
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")  # gemini-2.5-flash is retired for new keys
+# tried in order when a model is overloaded (503), slow (504), rate-limited (429) or retired (404)
+GEMINI_MODELS = list(dict.fromkeys([GEMINI_MODEL] + [m.strip() for m in os.environ.get(
+    "GEMINI_FALLBACK_MODELS", "gemini-3.6-flash,gemini-3.5-flash-lite").split(",") if m.strip()]))
+GEMINI_CALL_TIMEOUT_MS = 12_000  # per HTTP request: give up on a hung, overloaded model quickly
+GEMINI_BUDGET_S = 35             # whole decision, all models; then rules (heartbeat stays under the LEDs' 60 s)
 MAX_WAIT_MIN = 5.0     # "a short queue" for the probability tool
 MIN_SAVING_MIN = 3     # recommend waiting only if the net saving (below) is at least this much
 DELAY_COST = 0.1       # each minute you put off going must save 0.1 min of queue: 30 min later must save 3 more
@@ -133,38 +144,87 @@ def _explanation_ok(text: str, allowed: set[float], times: set[str]) -> bool:
     return True
 
 
+TREND_MIN = 0.5  # minutes of forecast change before "rising" or "dropping" is a fair word
+UP_WORDS = re.compile(r"\b(increas\w*|grow\w*|rise|rising|rises|longer|worse|build\w* up|peak\w*)\b", re.I)
+DOWN_WORDS = re.compile(r"\b(decreas\w*|drop\w*|fall\w*|shrink\w*|shorter|eas\w+|clear\w*|improv\w*)\b", re.I)
+
+
+def _direction_ok(text: str, wait_now: float, fcs: list[dict]) -> bool:
+    """Words about the trend must match the forecast medians: 'increase' needs some P50 at least
+    TREND_MIN above the wait now, 'drop' at least TREND_MIN below it (a 0.1-min wobble is no trend).
+    Negated phrases ("won't improve") are not judged."""
+    if re.search(r"\bnot\b|n't\b|n’t\b|\bno\b|\bnever\b|\bwithout\b", text, re.I):  # "won't", "doesn't", "no"
+        return True
+    p50 = [f["p50"] for f in fcs] or [wait_now]
+    if UP_WORDS.search(text) and max(p50) < wait_now + TREND_MIN:
+        return False
+    if DOWN_WORDS.search(text) and min(p50) > wait_now - TREND_MIN:
+        return False
+    return True
+
+
+def _retryable(e: Exception) -> bool:
+    """Overloaded, timed out, rate-limited or retired model: worth trying the next model."""
+    code = getattr(e, "code", None)
+    return code in (404, 429, 500, 502, 503, 504) or "timeout" in type(e).__name__.lower()
+
+
+def _bound_tools(state: dict, results: list) -> list:
+    """The three tools, answering for exactly this state (never a shared global, so a slow call that
+    was abandoned can't change what a later call sees). Every result is kept for number checking."""
+    def get_queue_state() -> dict:
+        """Latest live queue state: length, arrival and service rates, current wait estimate."""
+        results.append(state)
+        return state
+
+    def get_forecast(horizons: list[int]) -> list[dict]:
+        """Quantile forecasts (P10/P50/P90, minutes) of the wait for each horizon in minutes."""
+        have = tools.available_horizons()
+        wanted = sorted({int(h) for h in horizons if int(h) in have}) or have
+        out = tools.forecast(state, wanted)
+        results.append(out)
+        return out
+
+    def compare_slots(slots: list[str], max_wait_min: float) -> list[dict]:
+        """For each clock time in `slots` (HH:MM), expected wait and probability it exceeds max_wait_min."""
+        out = tools.slot_forecasts(state, tools.forecast(state), slots, max_wait_min)
+        results.append(out)
+        return out
+    return [get_queue_state, get_forecast, compare_slots]
+
+
 def gemini_decision(state: dict, fcs: list[dict], user_question: str | None = None) -> dict:
-    """Ask Gemini with function calling; raise on any failure so the caller can fall back."""
+    """Ask Gemini with function calling, trying GEMINI_MODELS in turn when one is overloaded or gone;
+    raise on any other failure so the caller can fall back. The reply's "_model" names who answered."""
     from google import genai
     from google.genai import types
 
     results = [state, fcs]
-
-    def record(fn):
-        @functools.wraps(fn)
-        def wrapper(*args, **kwargs):
-            out = fn(*args, **kwargs)
-            results.append(out)
-            return out
-        return wrapper
-
-    client = genai.Client(api_key=os.environ["GEMINI_API_KEY"],
-                          http_options=types.HttpOptions(timeout=30_000))
-    saved_state, tools.STATE = tools.STATE, state  # tools see the same state we decide on
-    try:
-        chat = client.chats.create(
-            model=GEMINI_MODEL,
-            config=types.GenerateContentConfig(
-                system_instruction=SYSTEM,
-                tools=[record(tools.get_queue_state), record(tools.get_forecast), record(tools.compare_slots)],
-                temperature=0.2,
-            ),
-        )
-        resp = chat.send_message(build_prompt(user_question, state))
-    finally:
-        tools.STATE = saved_state
-    text = re.sub(r"^```(?:json)?|```$", "", (resp.text or "").strip(), flags=re.M).strip()
-    reply = json.loads(text)
+    client = genai.Client(api_key=os.environ["GEMINI_API_KEY"].strip(),
+                          http_options=types.HttpOptions(timeout=GEMINI_CALL_TIMEOUT_MS))
+    resp, model, errors = None, None, []
+    for model in GEMINI_MODELS:
+        try:
+            chat = client.chats.create(
+                model=model,
+                config=types.GenerateContentConfig(system_instruction=SYSTEM, tools=_bound_tools(state, results),
+                                                   temperature=0.2),
+            )
+            resp = chat.send_message(build_prompt(user_question, state))
+            break
+        except Exception as e:
+            if not _retryable(e):
+                raise
+            errors.append(f"{model}: {getattr(e, 'code', type(e).__name__)}")
+    if resp is None:
+        raise RuntimeError("no Gemini model answered (" + "; ".join(errors) + ")")
+    text = (resp.text or "").strip()
+    found = re.search(r"\{.*\}", text, flags=re.S)  # the JSON object, even with prose or ``` fences around it
+    if not found:
+        raise ValueError(f"no JSON object in Gemini's reply: {text[:120]!r}")
+    reply = json.loads(found.group(0))
+    if not isinstance(reply, dict):
+        raise ValueError("Gemini's reply is not a JSON object")
 
     rec = reply.get("recommendation")
     if rec not in RECOMMENDATIONS:
@@ -184,8 +244,30 @@ def gemini_decision(state: dict, fcs: list[dict], user_question: str | None = No
     results.append([float(state["wait_now_min"]) - s["expected_wait_min"] for s in table.values()])
     if not explanation or not _explanation_ok(explanation, _allowed_numbers(results), times):
         raise ValueError(f"explanation quotes numbers not from tools: {explanation!r}")
+    if not _direction_ok(explanation, float(state["wait_now_min"]), fcs):
+        raise ValueError(f"explanation's trend contradicts the forecast: {explanation!r}")
     return {"recommendation": rec, "best_time": best_time, "minutes_saved": saved,
-            "explanation": explanation}
+            "explanation": explanation, "_model": model}
+
+
+def gemini_within_budget(state: dict, fcs: list[dict], user_question: str | None = None) -> dict:
+    """gemini_decision in a background thread, given at most GEMINI_BUDGET_S. A slower call is
+    abandoned (its result is never used), so the agent's heartbeat and the LEDs never stall."""
+    box: dict = {}
+
+    def work():
+        try:
+            box["decision"] = gemini_decision(state, fcs, user_question)
+        except Exception as e:
+            box["error"] = e
+    th = threading.Thread(target=work, daemon=True)
+    th.start()
+    th.join(GEMINI_BUDGET_S)
+    if th.is_alive():
+        raise TimeoutError(f"Gemini took longer than {GEMINI_BUDGET_S} s")
+    if "error" in box:
+        raise box["error"]
+    return box["decision"]
 
 
 def run_once(state: dict | None = None, use_gemini: bool = True, user_question: str | None = None,
@@ -209,9 +291,11 @@ def run_once(state: dict | None = None, use_gemini: bool = True, user_question: 
         decision, source = None, "model:generic_v2 + rules"
         if use_gemini and os.environ.get("GEMINI_API_KEY"):
             try:
-                decision, source = gemini_decision(state, fcs, user_question), "model:generic_v2 + gemini"
-            except Exception as e:  # network, quota, bad JSON, invented numbers: fall back
-                print(f"gemini failed, using rules: {e}", file=sys.stderr)
+                decision = gemini_within_budget(state, fcs, user_question)
+                source = f"model:generic_v2 + gemini ({decision.pop('_model')})"
+            except Exception as e:  # network, quota, overload, slow, bad JSON, invented numbers: fall back
+                msg, key = str(e), os.environ.get("GEMINI_API_KEY", "").strip()
+                print(f"gemini failed, using rules: {msg.replace(key, '[KEY]') if key else msg}", file=sys.stderr)
         pred.update(decision or rule_decision(state, fcs), source=source)
     if out is not None:
         write_json(pred, out)
@@ -226,11 +310,14 @@ def main() -> None:
     ap.add_argument("--question", help="ask a custom question (one-off)")
     ap.add_argument("--watch", type=float, metavar="SECONDS")
     args = ap.parse_args()
-    try:
-        from dotenv import load_dotenv
-        load_dotenv(ROOT / ".env")
-    except ImportError:
-        pass
+    if args.no_gemini:
+        print("Gemini disabled by --no-gemini; using rules.")
+    elif not os.environ.get("GEMINI_API_KEY", "").strip():
+        print(f"Gemini not configured: set GEMINI_API_KEY in {ROOT / '.env'} "
+              "or the environment; using rules.", file=sys.stderr)
+    else:
+        print(f"Gemini configured: {' then '.join(GEMINI_MODELS)} (called for fresh, open queue states; "
+              f"rules after {GEMINI_BUDGET_S} s).")
     tools.STATE_PATH = args.state
 
     last_key = last_wait = last_rec = last_pred = None

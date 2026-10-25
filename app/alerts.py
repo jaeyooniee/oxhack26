@@ -24,6 +24,12 @@ import wave
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+try:
+    from dotenv import load_dotenv
+    load_dotenv(ROOT / ".env")
+except ImportError:
+    pass
+
 PREDICTION_JSON = ROOT / "data" / "live" / "prediction.json"
 CACHE = ROOT / "data" / "live" / "tts_cache"
 VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID", "JBFqnCBsd6RMkjVDRZzb")
@@ -90,7 +96,7 @@ def speak(text: str, offline: bool = False) -> str:
     key = os.environ.get("ELEVENLABS_API_KEY")
     if key and not offline:
         CACHE.mkdir(parents=True, exist_ok=True)
-        clip = CACHE / f"{hashlib.sha1(f'{VOICE_ID}|{text}'.encode()).hexdigest()[:16]}.wav"
+        clip = CACHE / f"{hashlib.sha1(f'{VOICE_ID}|{TTS_MODEL}|{SAMPLE_RATE}|{text}'.encode()).hexdigest()[:16]}.wav"
         try:
             if not clip.exists():
                 clip.write_bytes(elevenlabs_wav(text, key))
@@ -109,11 +115,13 @@ def main() -> None:
     ap.add_argument("--say", help="speak this sentence and exit")
     ap.add_argument("--offline", action="store_true", help="never call ElevenLabs")
     args = ap.parse_args()
-    try:
-        from dotenv import load_dotenv
-        load_dotenv(ROOT / ".env")
-    except ImportError:
-        pass
+    if args.offline:
+        print("ElevenLabs disabled by --offline; using the laptop voice.")
+    elif not os.environ.get("ELEVENLABS_API_KEY", "").strip():
+        print(f"ElevenLabs not configured: set ELEVENLABS_API_KEY in {ROOT / '.env'} "
+              "or the environment; using the laptop voice.", file=sys.stderr)
+    else:
+        print(f"ElevenLabs configured: model {TTS_MODEL}, voice {VOICE_ID}.")
 
     if args.say:
         print(f"[{speak(args.say, args.offline)}] {args.say}")

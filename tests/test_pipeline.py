@@ -390,9 +390,10 @@ class _FakeGenai:
 
             def send_message(self, prompt):
                 if fake.call_tools:
+                    get_state = next(f for f in self.tools if f.__name__ == "get_queue_state")
                     for f in self.tools:
                         f(**({"horizons": [15, 30, 60]} if f.__name__ == "get_forecast" else
-                             {"slots": tools.candidate_slots(tools.get_queue_state()), "max_wait_min": 5}
+                             {"slots": tools.candidate_slots(get_state()), "max_wait_min": 5}
                              if f.__name__ == "compare_slots" else {}))
                 return type("R", (), {"text": fake.text})()
 
@@ -424,7 +425,7 @@ def test_gemini_answers_are_validated():
             p = qa.run_once(st, use_gemini=True, out=None)
         finally:
             g.uninstall()
-        assert p["source"].endswith("gemini") and p["recommendation"] == "go_now", p
+        assert "+ gemini (" in p["source"] and p["recommendation"] == "go_now", p
 
         small = min(table.values(), key=lambda s: abs(st["wait_now_min"] - s["expected_wait_min"] - 1))
         bad_cases = {
@@ -449,6 +450,118 @@ def test_gemini_answers_are_validated():
             assert p["source"].endswith("rules"), (name, p)
     finally:
         del os.environ["GEMINI_API_KEY"]
+
+
+class _ScriptedGenai:
+    """google.genai stand-in whose models fail or answer as scripted: {model: Exception | str | ("slow", s)}."""
+    def __init__(self, script):
+        self.script, self.asked = script, []
+
+    def install(self):
+        import google.genai as genai
+        fake = self
+
+        class Chat:
+            def __init__(self, model):
+                self.model = model
+
+            def send_message(self, prompt):
+                fake.asked.append(self.model)
+                what = fake.script[self.model]
+                if isinstance(what, Exception):
+                    raise what
+                if isinstance(what, tuple):
+                    time.sleep(what[1])
+                    what = what[2]
+                return type("R", (), {"text": what})()
+
+        class Client:
+            def __init__(self, **kw):
+                self.chats = type("C", (), {"create": staticmethod(lambda model, config: Chat(model))})()
+        self.orig = genai.Client
+        genai.Client = Client
+        return self
+
+    def uninstall(self):
+        import google.genai as genai
+        genai.Client = self.orig
+
+
+def _overloaded(code):
+    e = RuntimeError(f"{code} UNAVAILABLE")
+    e.code = code
+    return e
+
+
+def test_gemini_falls_back_across_models_and_budget():
+    st = {"timestamp": "2026-10-24T18:20:00", "status": "open", "queue_length": 20, "wait_now_min": 12.5,
+          "wait_instant_min": 12.5, "venue_open": "18:00", "venue_close": "19:30"}
+    fcs = [{"horizon_min": 15, "p10": 9, "p50": 14.4, "p90": 20}, {"horizon_min": 30, "p10": 10, "p50": 18.7, "p90": 25},
+           {"horizon_min": 60, "p10": 8, "p50": 18.1, "p90": 26}]
+    good = 'Sure! Here you go:\n```json\n{"recommendation": "go_now", "best_time": "18:20", "explanation": "Wait times are expected to increase from 12.5 minutes, so go now."}\n```'
+    models = ["m-overloaded", "m-ok", "m-spare"]
+    real = (qa.GEMINI_MODELS, qa.GEMINI_BUDGET_S)
+    qa.GEMINI_MODELS = models
+    os.environ["GEMINI_API_KEY"] = "test-key-123"
+    try:
+        # 503 on the first model: the second answers; JSON is dug out of prose and fences
+        g = _ScriptedGenai({"m-overloaded": _overloaded(503), "m-ok": good, "m-spare": good}).install()
+        try:
+            p = qa.run_once(st, use_gemini=True, out=None)
+        finally:
+            g.uninstall()
+        assert g.asked == ["m-overloaded", "m-ok"] and p["source"] == "model:generic_v2 + gemini (m-ok)", (g.asked, p)
+        assert "_model" not in p
+        # every model overloaded, rate-limited or retired: rules
+        g = _ScriptedGenai({"m-overloaded": _overloaded(503), "m-ok": _overloaded(429), "m-spare": _overloaded(404)}).install()
+        try:
+            p = qa.run_once(st, use_gemini=True, out=None)
+        finally:
+            g.uninstall()
+        assert g.asked == models and p["source"].endswith("rules"), (g.asked, p)
+        # a non-retryable error (bad request) stops at once
+        g = _ScriptedGenai({"m-overloaded": _overloaded(400), "m-ok": good, "m-spare": good}).install()
+        try:
+            p = qa.run_once(st, use_gemini=True, out=None)
+        finally:
+            g.uninstall()
+        assert g.asked == ["m-overloaded"] and p["source"].endswith("rules"), g.asked
+        # too slow: abandoned after the budget, rules answer in time
+        qa.GEMINI_BUDGET_S = 1
+        g = _ScriptedGenai({"m-overloaded": ("slow", 3, good), "m-ok": good, "m-spare": good}).install()
+        try:
+            t = time.time()
+            p = qa.run_once(st, use_gemini=True, out=None)
+            took = time.time() - t
+        finally:
+            time.sleep(2.2)  # let the abandoned thread finish before the fake is removed
+            g.uninstall()
+        assert took < 2.5 and p["source"].endswith("rules"), (took, p)
+        qa.GEMINI_BUDGET_S = real[1]
+        # trend words must match the forecast: "drop" when every forecast is higher is rejected
+        lie = '{"recommendation": "go_now", "best_time": "18:20", "explanation": "The wait will drop soon, but 12.5 minutes is fine."}'
+        g = _ScriptedGenai({"m-overloaded": lie, "m-ok": lie, "m-spare": lie}).install()
+        try:
+            qa.gemini_decision(st, fcs)
+            raise AssertionError("accepted 'drop' with every forecast above the wait now")
+        except ValueError as e:
+            assert "trend" in str(e), e
+        finally:
+            g.uninstall()
+        # no JSON at all
+        g = _ScriptedGenai({"m-overloaded": "I think you should go now.", "m-ok": good, "m-spare": good}).install()
+        try:
+            p = qa.run_once(st, use_gemini=True, out=None)
+        finally:
+            g.uninstall()
+        assert p["source"].endswith("rules"), p
+    finally:
+        qa.GEMINI_MODELS, qa.GEMINI_BUDGET_S = real
+        del os.environ["GEMINI_API_KEY"]
+    assert qa._direction_ok("It won't improve much.", 10, fcs)  # negations are not judged
+    assert not qa._direction_ok("The queue is growing.", 10, [{"horizon_min": 15, "p50": 8}])
+    assert qa._direction_ok("The queue will shrink to 4 minutes.", 10, [{"horizon_min": 15, "p50": 4}])
+    assert "gemini-2.5-flash" not in qa.GEMINI_MODELS  # retired for new keys
 
 
 def test_rule_decision_and_explanation_numbers():
