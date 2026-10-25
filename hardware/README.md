@@ -30,6 +30,12 @@ if it doesn't, flash the classic Uno backup.
 4. Once per second, print one JSON line exactly as in `docs/data_contract.md` §1.
 5. Listen on serial for an LED command: `G` = green, `A` = amber, `O` = off.
 
+## Beams: not used for counting
+The two beams ended up too close together (a few cm) to tell people apart, so the camera
+counts arrivals and serves instead (`ingest/camera_count.py` + `ingest/tracker.py`). The board
+still matters: hand-count button (ground truth), ultrasonic (queue length check) and LEDs. The
+beam counters are still logged and `state.py --source beams` uses them if the camera fails.
+
 ## Checks before mounting
 - Blink test, then each sensor alone, then all together.
 - Fake queue test: 10 people walk through; compare beam vs button vs camera.

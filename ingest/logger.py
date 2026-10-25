@@ -16,18 +16,29 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 HEADER = "wall_time,ms,dist_cm,in_total,out_total,btn_total"
 FIELDS = ("ms", "dist_cm", "in", "out", "btn")
+# Newer firmware (on-board queue model) names the same readings differently and reports mm.
+NEW_FIELDS = ("t", "dist_mm", "arrivals", "served", "manual")
 LED_EVERY_S = 5
 LEDS = {"go_now": "G", "wait": "A"}
 PREDICTION_MAX_AGE_S = 60  # the agent rewrites prediction.json every --watch interval
 
 
 def parse_line(line: str) -> dict | None:
-    """Return the decoded JSON dict, or None for a broken line."""
+    """Return the decoded JSON dict, or None for a broken line. Accepts both firmware formats."""
     try:
         d = json.loads(line.strip())
     except (json.JSONDecodeError, UnicodeDecodeError):
         return None
-    if not isinstance(d, dict) or any(k not in d for k in FIELDS):
+    if not isinstance(d, dict):
+        return None
+    if all(k in d for k in NEW_FIELDS) and not any(k in d for k in FIELDS):
+        try:
+            mm = float(d["dist_mm"])
+            return {"ms": int(d["t"]), "dist_cm": -1.0 if mm < 0 else mm / 10,
+                    "in": int(d["arrivals"]), "out": int(d["served"]), "btn": int(d["manual"])}
+        except (TypeError, ValueError):
+            return None
+    if any(k not in d for k in FIELDS):
         return None
     try:
         return {"ms": int(d["ms"]), "dist_cm": float(d["dist_cm"]),
