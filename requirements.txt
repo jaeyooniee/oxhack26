@@ -1,11 +1,13 @@
 pandas
 numpy
+scipy  # people tracker (comes with lightgbm anyway)
 lightgbm
 matplotlib
 pyserial
 streamlit>=1.50  # st.fragment(run_every=...), width="stretch"
 google-genai
 python-dotenv
+psycopg[binary]  # Tiger Cloud (ingest/tigerdata.py)
 opencv-python<5  # 5.x dropped the HOG person detector used as the camera fallback
 # Optional: YOLOv8 camera counting (better than HOG in crowds). Pulls in PyTorch; on Windows
 # it needs long paths enabled first. Install with: pip install ultralytics

@@ -24,7 +24,7 @@ import streamlit as st
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from agent.queue_agent import run_once  # noqa: E402
-from ingest.state import (load_camera, load_run, load_schedule, load_ultrasonic, next_rush,  # noqa: E402
+from ingest.state import (load_camera, load_counts, load_schedule, load_ultrasonic, next_rush,  # noqa: E402
                           read_json, resolve_rush, state_and_history)
 from ingest.logger import PREDICTION_MAX_AGE_S, prediction_age_s  # noqa: E402
 from model.forecast import calibration  # noqa: E402
@@ -52,12 +52,19 @@ def parse_args():
 
 
 @st.cache_data(show_spinner=False)
-def _load(path: str, mtime: float) -> pd.DataFrame:
-    return load_run(Path(path))
+def _load(path: str, camera: str | None, mtimes: tuple, source: str) -> pd.DataFrame:
+    return load_counts(Path(path), Path(camera) if camera else None, source)
 
 
-def load(path: Path) -> pd.DataFrame | None:
-    return _load(str(path), path.stat().st_mtime) if path.exists() else None
+def load(path: Path, camera: Path | None = None, source: str = "auto") -> pd.DataFrame | None:
+    """Counters as ingest/state.py sees them: the camera tracker's when it is running."""
+    paths = [p for p in (path, camera) if p is not None and p.exists()]
+    if not paths:
+        return None
+    try:
+        return _load(str(path), str(camera) if camera else None, tuple(p.stat().st_mtime for p in paths), source)
+    except (OSError, ValueError, KeyError):
+        return None
 
 
 def recommendation_card(pred: dict | None):
@@ -123,13 +130,14 @@ def forecast_chart(history: pd.DataFrame, now: pd.Timestamp, pred: dict | None,
 
 
 def accuracy_panel(df: pd.DataFrame, history: pd.DataFrame, cam: pd.DataFrame | None):
-    with st.expander("Sensor accuracy: beams vs hand count vs camera", expanded=False):
+    with st.expander("Sensor accuracy: camera / beams vs hand count", expanded=False):
+        src = "camera tracker" if df.attrs.get("source") == "camera" else "beam"
         counts = df[["in_total", "out_total", "btn_total"]].resample("30s").last().dropna()
-        counts.columns = ["arrivals (entry beam)", "served (exit beam)", "served (hand count)"]
+        counts.columns = [f"arrivals ({src})", f"served ({src})", "served (hand count)"]
         st.line_chart(counts)
         btn, out = int(df["btn_total"].iloc[-1]), int(df["out_total"].iloc[-1])
         if btn:
-            st.write(f"Exit beam counted **{out}** vs **{btn}** by hand: "
+            st.write(f"The {src} counted **{out}** served vs **{btn}** by hand: "
                      f"error **{100 * (out - btn) / btn:+.1f}%**.")
         if cam is not None and not cam.empty:
             cam = cam[cam.index <= history.index[-1]]["people_in_zone"].resample("1min").median()
@@ -200,7 +208,7 @@ def main():
         pass
 
     if args.replay:
-        df_full = load(args.replay)
+        df_full = load(args.replay, args.camera)
         if df_full is None:
             st.error(f"Replay file not found: {args.replay}")
             return
@@ -228,8 +236,8 @@ def main():
             pred = replay_prediction(state, use_gemini)
             mode = f"REPLAY {st.session_state.speed}x" + (" (paused)" if st.session_state.paused_at else "")
         else:
-            df = load(LIVE / "run.csv")
             state = read_json(LIVE / "queue_state.json")
+            df = load(LIVE / "run.csv", LIVE / "camera.csv", (state or {}).get("counts_from", "auto"))
             pred = read_json(LIVE / "prediction.json")
             if df is None or state is None:
                 st.info("No live data yet: start ingest/logger.py, ingest/state.py --watch and "

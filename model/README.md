@@ -16,6 +16,14 @@ forecast(queue_state)   # -> [{"horizon_min": 15, "p10": .., "p50": .., "p90": .
   queuetime.zip was never added to the repo.
 - `backtest.py`: replays a recorded rush, scores the forecast and fits the band calibration
   (`artifacts/food_calibration.json`, applied automatically by `forecast.py` when present).
+  It uses the camera's counts when `<rush>_camera.csv` sits next to `<rush>_run.csv` (as live).
+
+## Learning from our own (camera) data
+A few rushes are far too little to retrain the LightGBM models (they learnt from years of Disney
+data), so the food queue teaches the model in two places instead:
+1. **Bands:** `backtest.py ... --save` fits how much wider the P10-P90 bands must be on this queue.
+2. **Counts:** `ingest/camera_accuracy.py tune --save` fits the people tracker to the hand count,
+   so the wait the model starts from is right. Do this first: a wrong count is a wrong forecast.
 - Training and validation experiments: `claude_model/`.
 
 ## Test scores (Disney 2019, never seen in training; MAE in minutes)

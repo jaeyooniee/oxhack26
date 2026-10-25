@@ -32,7 +32,7 @@ sys.path.insert(0, str(ROOT))
 from agent.queue_agent import MAX_WAIT_MIN, STALE_S, run_once  # noqa: E402
 from agent.tools import slot_forecasts  # noqa: E402
 from ingest.logger import PREDICTION_MAX_AGE_S, prediction_age_s  # noqa: E402
-from ingest.state import (load_camera, load_run, load_schedule, load_ultrasonic, next_rush,  # noqa: E402
+from ingest.state import (load_camera, load_counts, load_schedule, load_ultrasonic, next_rush,  # noqa: E402
                           read_json, resolve_rush, rush_window, state_and_history)
 
 WEB = Path(__file__).resolve().parent / "web"
@@ -109,7 +109,8 @@ def _sensors(df: pd.DataFrame, now: pd.Timestamp) -> dict:
     last = df[df.index <= now].iloc[-1]
     return {"dist_cm": float(last.get("dist_cm", float("nan"))), "in": int(last["in_total"]),
             "out": int(last["out_total"]), "btn": int(last["btn_total"]),
-            "last_row": df[df.index <= now].index[-1].strftime("%H:%M:%S"), "board_resets": df.attrs.get("resets", 0)}
+            "last_row": df[df.index <= now].index[-1].strftime("%H:%M:%S"), "board_resets": df.attrs.get("resets", 0),
+            "counts_from": df.attrs.get("source", "beams")}
 
 
 class Source:
@@ -120,9 +121,10 @@ class Source:
         self.lock = threading.Lock()
         self.cached: tuple[float, dict] | None = None
         if replay:
-            self.df = load_run(replay)
             guess = replay.with_name(replay.name.replace("_run.csv", "_camera.csv"))
-            self.cam = load_camera(camera or guess) if (camera or guess != replay) else None
+            cam_path = camera or (guess if guess != replay else None)
+            self.cam = load_camera(cam_path) if cam_path else None
+            self.df = load_counts(replay, cam_path)  # the camera tracker's counts when the file has them
             self.t0, self.offset_s, self.paused_at = time.monotonic(), 0.0, None
             self.pred_cache: dict = {}
 
@@ -205,7 +207,7 @@ class Source:
         hb = prediction_age_s(pred)
         out["heartbeat_age_s"] = hb
         if age_state > STALE_S:  # same rules as the agent and the LEDs
-            out.update(status="stale", message=f"No fresh sensor data for {age_state / 60:.0f} min: is logger.py running?")
+            out.update(status="stale", message=f"No fresh sensor data for {age_state / 60:.0f} min: are camera_count.py and logger.py running?")
             pred = {**(pred or {}), "recommendation": "unknown", "explanation": out["message"]}
         elif hb is None or hb > PREDICTION_MAX_AGE_S:
             out.update(status="stale", message="No update from the agent " + (f"for {hb / 60:.0f} min" if hb else "yet")
@@ -213,7 +215,7 @@ class Source:
             pred = {**(pred or {}), "recommendation": "unknown", "explanation": out["message"]}
         out["prediction"] = pred
         try:
-            df = load_run(LIVE / "run.csv")
+            df = load_counts(LIVE / "run.csv", LIVE / "camera.csv", state.get("counts_from", "auto"))
             df = df[df.index <= now]
             _, series = state_and_history(df, now, state["venue_open"], state["venue_close"],
                                           live={} if "smoothing" in state else None,

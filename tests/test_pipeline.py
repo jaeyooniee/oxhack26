@@ -23,7 +23,12 @@ from agent import queue_agent as qa  # noqa: E402
 from agent import tools  # noqa: E402
 from app.alerts import phrase  # noqa: E402
 from ingest import state as S  # noqa: E402
-from ingest.camera_count import count_in_zone  # noqa: E402
+from ingest import archive as AR  # noqa: E402
+from ingest import camera_accuracy as CA  # noqa: E402
+from ingest import fake_camera as FC  # noqa: E402
+from ingest import tigerdata as TD  # noqa: E402
+from ingest.camera_count import HEADER as CAM_HEADER, count_in_zone, resume_offsets  # noqa: E402
+from ingest.tracker import Tracker, decode_hist, encode_hist  # noqa: E402
 from ingest.logger import csv_row, led_command, parse_line  # noqa: E402
 from model import backtest as bt  # noqa: E402
 from model import forecast as fc  # noqa: E402
@@ -638,6 +643,11 @@ def test_logger_parsing():
     for bad in ['{"ms": 1, "dist_cm"', "garbage", "[1,2]", '{"ms":1}', '{"ms":"x","dist_cm":1,"in":1,"out":1,"btn":1}', ""]:
         assert parse_line(bad) is None, bad
     assert csv_row(parse_line(good), datetime(2026, 10, 24, 18, 0, 0)) == "2026-10-24T18:00:00,123456,182.4,37,31,12"
+    new = ('{"t":47000,"dist_mm":1590,"occ_frac":1.00,"served":3,"putback":0,"manual":2,'
+           '"arrivals":21,"queue":18,"lam":7.85,"wait_min":19.1}')
+    assert parse_line(new) == {"ms": 47000, "dist_cm": 159.0, "in": 21, "out": 3, "btn": 2}
+    assert parse_line(new.replace('"dist_mm":1590', '"dist_mm":-1'))["dist_cm"] == -1.0
+    assert parse_line('{"t":"x","dist_mm":1,"served":1,"manual":1,"arrivals":1}') is None
 
 
 def test_camera_zone():
@@ -919,6 +929,178 @@ def test_app_server_live_states_and_broken_files():
     finally:
         httpd.shutdown()
         srv.LIVE = real_live
+
+
+# ---------------------------------------------------------------------- camera as the main sensor
+def _track(frames, **kw):
+    tr = Tracker(FC.ZONE, **kw)
+    t0 = frames[0][0]
+    for wall, dets in frames:
+        c = tr.update(dets, (wall - t0).total_seconds())
+    return tr, c
+
+
+def test_tracker_counts_distinct_people_through_occlusions():
+    """People hidden behind others for 1-6 s and missed 8% of frames: re-identification keeps
+    their ID, so arrivals stay close to the truth; without it the same rush counts many times over."""
+    for seed in (0, 1):
+        frames, truth = FC.simulate(minutes=10, seed=seed)
+        tr, c = _track(frames)
+        _, c_off = _track(frames, reid=False)
+        n = len(truth["arrived"])
+        assert abs(c["in_total"] - n) <= max(3, 0.2 * n), (seed, c, n)
+        assert c_off["in_total"] > 2 * c["in_total"], (c_off, c)
+        assert c["tracked_in_zone"] == c["in_total"] - c["out_total"] >= 0
+
+
+def test_tracker_ignores_one_frame_blips_and_counts_leaving():
+    tr = Tracker([[0, 0], [100, 0], [100, 100], [0, 100]])
+    h = np.full(32, 1 / 32, dtype=np.float32)
+    tr.update([((40, 0, 60, 50), h)], 0.0)            # one false detection ...
+    for k in range(1, 20):
+        tr.update([], k * 0.2)                         # ... never seen again: never counted
+    assert tr.counts()["in_total"] == 0
+    for k in range(10):                                # a real person stands in the zone
+        tr.update([((40, 0, 60, 50), h)], 10 + k * 0.2)
+    assert tr.counts()["in_total"] == 1 and tr.counts()["tracked_in_zone"] == 1
+    for k in range(40):                                # and walks out of it (to the right)
+        x = 40 + 5 * k
+        tr.update([((x, 0, x + 20, 50), h)], 12 + k * 0.2)
+    c = tr.counts()
+    assert c["out_total"] == 1 and c["tracked_in_zone"] == 0 and c["distinct_total"] == 1, c
+    assert decode_hist(encode_hist(h)) is not None and len(encode_hist(h)) == 64
+
+
+def _cam_csv(name, rows):
+    path = TMP / name
+    path.write_text(CAM_HEADER + "\n" + "\n".join(rows) + "\n")
+    return path
+
+
+def test_counts_come_from_the_camera_when_it_runs():
+    build(f"{DAY}T18:00:00", f"{DAY}T18:30:00", [], "beams_dead")  # board logging, beams count nobody
+    run_path = TMP / "beams_dead.csv"
+    rows, q_in, q_out = [], 0, 0
+    for k in range(600):  # 30 min, one row per 3 s: 12 arrive in the first 10 min, 7 served after
+        t = ts("18:00:00") + pd.Timedelta(seconds=3 * k)
+        if k % 16 == 15 and q_in < 12:
+            q_in += 1
+        if k > 200 and k % 30 == 0 and q_out < 7:
+            q_out += 1
+        rows.append(f"{t:%Y-%m-%dT%H:%M:%S},{q_in - q_out},{q_in},{q_out},{q_in},{q_in - q_out}")
+    cam = _cam_csv("cam_tracked.csv", rows)
+    df = S.load_counts(run_path, cam)
+    assert df.attrs["source"] == "camera" and df["in_total"].iloc[-1] == 12 and "btn_total" in df
+    st = state(df, ts("18:29:00"), camera=S.load_camera(cam))
+    assert st["queue_length"] == 5 and st["counts_from"] == "camera", st
+    # camera only, no board at all
+    df2 = S.load_counts(TMP / "no_board.csv", cam)
+    assert df2.attrs["source"] == "camera" and (df2["btn_total"] == 0).all()
+    # beams forced, or an old head-count-only camera.csv: the beams
+    assert S.load_counts(run_path, cam, "beams").attrs["source"] == "beams"
+    old = TMP / "cam_old.csv"
+    old.write_text("wall_time,people_in_zone\n2026-10-24T18:00:00,1\n")
+    assert S.load_counts(run_path, old).attrs["source"] == "beams"
+    try:
+        S.load_counts(run_path, old, "camera")
+        raise AssertionError("camera source with an old camera.csv must fail loudly")
+    except ValueError:
+        pass
+    # camera stopped long ago while the board kept logging: auto falls back to the beams
+    stale = _cam_csv("cam_stale.csv", rows[:50])
+    assert S.load_counts(run_path, stale).attrs["source"] == "beams"
+    # camera_count.py restarted (counters back to 0): stitched, never going down
+    restarted = _cam_csv("cam_restart.csv", rows[:300] + [",".join([r.split(",")[0], "0", "0", "0", "0", "0"])
+                                                         for r in rows[300:302]] + rows[302:])
+    d3 = S.load_counts(run_path, restarted)
+    assert d3["in_total"].is_monotonic_increasing and d3.attrs["camera_resets"] == 1
+
+
+def test_camera_count_resumes_its_counters():
+    path = _cam_csv("cam_resume.csv", ["2026-10-24T18:00:00,2,5,3,5,2", "2026-10-24T18:00:03,2,6,4,6,2", "2026-10-24T18:00"])
+    assert resume_offsets(path) == {"in_total": 6, "out_total": 4, "distinct_total": 6}
+    old = TMP / "cam_old2.csv"
+    old.write_text("wall_time,people_in_zone\n2026-10-24T18:00:00,1\n")
+    assert resume_offsets(old) == {} and resume_offsets(TMP / "nope.csv") == {}
+
+
+def test_camera_accuracy_against_the_hand_count():
+    """Replay a fake detections log through the tracker and score it against the true serves:
+    the served error is what shows double counting (ID switches) or missed people."""
+    log, served = TMP / "det.jsonl", TMP / "served.csv"
+    truth = FC.write(log, served, minutes=12, seed=3)
+    cam = CA.track_log(log)
+    assert S.has_tracker_counts(cam) and cam["in_total"].is_monotonic_increasing
+    hand = CA.hand_served(None, [served])
+    assert hand.iloc[-1] == len(truth["served"])
+    rep = CA.score(cam, hand, None, ts("17:30:00"), ts("19:00:00"))
+    assert rep["served_hand"] == len(truth["served"]) and abs(rep["served_error_pct"]) <= 40, rep
+    assert any("served" in line for line in CA.explain(rep))
+    # queue counts written by `note`: compared with the camera row nearest to each
+    labels = TMP / "labels.csv"
+    labels.write_text("wall_time,people\n" + "\n".join(f"{t:%Y-%m-%dT%H:%M:%S},{int(r.tracked_in_zone)}"
+                                                       for t, r in cam.iloc[::40].iterrows()))
+    rep = CA.score(cam, hand, CA.load_labels(labels), ts("17:30:00"), ts("19:00:00"))
+    assert rep["queue_counts"] >= 3 and rep["queue_mae_tracked"] == 0, rep
+    # the tuner's loss: perfect = 0
+    assert CA._loss({"served_camera": 5, "served_hand": 5}) == 0
+
+
+def test_archive_keeps_everything_and_cuts_rushes():
+    live, arch, rep = TMP / "arch_live", TMP / "arch", TMP / "arch_replay"
+    live.mkdir(exist_ok=True)
+    run = ["wall_time,ms,dist_cm,in_total,out_total,btn_total"]
+    cam = [CAM_HEADER]
+    t = pd.Timestamp(f"{DAY}T17:00:00")
+    for k in range(0, 9 * 3600, 60):  # 17:00 -> 02:00, one row a minute
+        tt = t + pd.Timedelta(seconds=k)
+        run.append(f"{tt:%Y-%m-%dT%H:%M:%S},{k * 1000},300,0,0,0")
+        cam.append(f"{tt:%Y-%m-%dT%H:%M:%S},0,0,0,0,0")
+    (live / "run.csv").write_text("\n".join(run) + "\n2026-10-25T02:00")  # half-written last line
+    (live / "camera.csv").write_text("\n".join(cam) + "\n")
+    det = [json.dumps({"start": f"{DAY}T17:00:00", "zone": FC.ZONE})]
+    det += [json.dumps({"t": f"{(t + pd.Timedelta(minutes=m)):%Y-%m-%dT%H:%M:%S}.000", "b": []}) for m in range(0, 540, 5)]
+    (live / "detections.jsonl").write_text("\n".join(det) + "\n")
+    S.write_json({"generated_at": f"{DAY}T23:55:00", "recommendation": "go_now"}, live / "prediction.json")
+    old_live = AR.LIVE
+    AR.LIVE = live
+    try:
+        snap = AR.snapshot(live, arch, rep, SCHED)
+        again = AR.snapshot(live, arch, rep, SCHED)
+    finally:
+        AR.LIVE = old_live
+    folder = arch / DAY
+    assert snap["folder"] == folder and "run.csv" in snap["changed"] and again["changed"] == [], again
+    assert not (folder / "run.csv").read_text().rstrip().endswith("02:00")  # half line not copied
+    assert (rep / "dinner_run.csv").exists() and (rep / "midnight_camera.csv").exists()
+    mid = pd.read_csv(rep / "midnight_run.csv", parse_dates=["wall_time"])
+    assert mid["wall_time"].min() >= ts("23:15:00") and mid["wall_time"].max() <= ts("01:45:00", "2026-10-25")
+    import gzip
+    lines = gzip.decompress((folder / "detections_midnight.jsonl.gz").read_bytes()).decode().splitlines()
+    assert '"zone"' in lines[0] and len(lines) > 10
+    preds = (folder / "predictions.jsonl").read_text().splitlines()
+    assert len(preds) == 1  # the same prediction is not logged twice
+
+
+def test_tigerdata_rows_from_the_files():
+    """What ingest/tigerdata.py sends: one row per camera / board line, the latest state and
+    prediction, and the ground truth per rush. A half-written last line is skipped."""
+    live = TMP / "tiger_live"
+    (live / "gt").mkdir(parents=True, exist_ok=True)
+    (live / "camera.csv").write_text(CAM_HEADER + "\n2026-10-24T18:00:00,1,1,0,1,1\n2026-10-24T18:00:03,2,2,0,2,2\n2026-10-24T18:00")
+    (live / "run.csv").write_text("wall_time,ms,dist_cm,in_total,out_total,btn_total\n2026-10-24T18:00:00,1000,300.5,0,0,1\n")
+    (live / "prediction.json").write_text((ROOT / "data/sample/prediction_sample.json").read_text())
+    (live / "queue_state.json").write_text((ROOT / "data/sample/queue_state_sample.json").read_text())
+    (live / "gt" / "hand_count_dinner.csv").write_text("wall_time,event\n2026-10-24T18:05:00,served\n")
+    cam = TD.camera_rows(live, "x")
+    assert len(cam) == 2 and cam[1][1:] == ("x", 2, 2, 0, 2, 2) and cam[0][0].tzinfo is not None
+    assert TD.board_rows(live, "x")[0][2:] == (300.5, 0, 0, 1)
+    st, pred = TD.state_row(live, "x"), TD.prediction_rows(live, "x")
+    assert len(st) == 1 and json.loads(st[0][-1])["queue_length"] is not None
+    assert len(pred) == 1 and len(pred[0]) == 7 + 9 + 3 and pred[0][3] in ("go_now", "wait", "unknown", "closed")
+    gt = TD.ground_truth(live / "gt", "x")
+    assert list(gt) == [("hand_counts", "dinner")] and gt[("hand_counts", "dinner")][0][2:] == ("dinner", "served")
+    assert TD.camera_rows(TMP / "nothing_here", "x") == [] and TD.state_row(TMP / "nothing_here", "x") == []
 
 
 def run_all():
