@@ -25,10 +25,24 @@ wall_time,ms,dist_cm,in_total,out_total,btn_total
 
 ## 3. `data/live/camera.csv` (written by `ingest/camera_count.py`)
 ```
-wall_time,people_in_zone
-2026-10-24T18:05:12,9
+wall_time,people_in_zone,in_total,out_total,distinct_total,tracked_in_zone
+2026-10-24T18:05:12,9,41,32,40,9
 ```
-Counts only. No frames are saved.
+| Field | Meaning |
+|---|---|
+| `people_in_zone` | Heads counted in the zone (median over the row's few seconds) |
+| `in_total` | Cumulative people who entered the zone (tracker, `ingest/tracker.py`) |
+| `out_total` | Cumulative people who left it (served, or walked off) |
+| `distinct_total` | Different person IDs counted so far |
+| `tracked_in_zone` | `in_total - out_total`: the queue now, including anyone hidden for a moment |
+
+**The camera is the main sensor**: the beams sit too close together to count people, so
+`ingest/state.py` takes arrivals and served from `in_total` / `out_total` (and the hand-count
+button and ultrasonic from `run.csv`) whenever camera.csv has these columns and is up to date
+(`--source auto`, the default; `state.load_counts`). The state then has `"counts_from": "camera"`.
+Counters are cumulative and carry on after a restart of `camera_count.py`.
+Old files with only `wall_time,people_in_zone` are still read (drift evidence only).
+No frames are saved.
 
 ## 4. `data/live/queue_state.json` (written by `ingest/state.py`, latest state only)
 ```json
@@ -62,7 +76,8 @@ median of its last 3 one-minute values: the venue's equivalent of Disney's (staf
 posted wait. That is why the Disney-trained model can take `wait_now_min` as input.
 `status`: `open`, or `closed` outside the rush's window (30 min before opening to 15 min after
 closing) when nobody is queueing; then `next_rush` = `{"name", "open"}` if a schedule is used.
-Also present when they apply: `rush` (name from data/rushes.json) and `board_resets`.
+Also present when they apply: `rush` (name from data/rushes.json), `board_resets` and
+`counts_from` (`camera` or `beams`, see §3).
 
 ## 5. `data/live/prediction.json` (written by `agent/queue_agent.py`)
 ```json
@@ -93,6 +108,40 @@ LEDs off when `checked_at` is more than 60 s old.
 wall_time,event
 2026-10-24T18:07:03,served
 ```
+Written by `python ingest/camera_accuracy.py tally` (Enter = one person served) when the
+button is not used; otherwise the button's `btn_total` in run.csv is the hand count.
 
-## 7. `data/replay/<rush>_run.csv`
-Copy of `run.csv` for one rush (dinner, midnight, breakfast). The demo replays these if the live sensor fails.
+## 7. `data/replay/<rush>_run.csv` and `<rush>_camera.csv`
+`run.csv` and `camera.csv` cut to one rush (dinner, midnight, breakfast), written by
+`ingest/archive.py`. The demo replays these if the live sensor fails; the camera file next to a
+run file is picked up automatically (and its tracker counts used, as live).
+
+## 8. `data/live/detections.jsonl` (written by `ingest/camera_count.py`, unless `--no-log`)
+One JSON object per line. A header each time camera_count.py starts, then one line per frame:
+```
+{"start": "2026-10-24T18:00:02", "detector": "yolov8n", "frame": [480, 640], "zone": [[64, 200], ...]}
+{"t":"2026-10-24T18:05:12.345","b":[[x1, y1, x2, y2, "<64 hex chars>"], ...]}
+```
+Boxes in pixels of the resized frame; the hex string is the person's 32-number colour fingerprint
+(hue x saturation histogram of the torso). **No pixels.** Used to re-run and tune the tracker on
+a recorded rush: `python ingest/camera_accuracy.py tune`. About 5-15 MB per hour.
+
+## 9. `data/ground_truth/queue_count_<rush>.csv` (written by `python ingest/camera_accuracy.py note N`)
+```
+wall_time,people
+2026-10-24T18:12:40,7
+```
+Someone counts the people in the queue by eye now and then; the camera's queue length is scored
+against it.
+
+## 10. Where the data is kept (`ingest/archive.py`)
+`data/live/` is not committed. `python ingest/archive.py --watch 10 --commit --push` copies it
+every 10 minutes into folders that are:
+| Path | What |
+|---|---|
+| `data/archive/<date>/run.csv`, `camera.csv` | Everything logged (date = the day logging started) |
+| `data/archive/<date>/detections_<rush>.jsonl.gz` | §8, cut to each rush |
+| `data/archive/<date>/predictions.jsonl` | Every new `prediction.json` (§5), timestamped |
+| `data/archive/<date>/*.json` | Camera zone, ultrasonic calibration, tracker settings |
+| `data/replay/<rush>_run.csv`, `<rush>_camera.csv` | Each rush cut out (§7) |
+| `data/ground_truth/` | §6, §9 |

@@ -13,9 +13,10 @@ bands. A Gemini agent turns the numbers into a decision: "go now" or "go at 18:4
  Arduino sensors -> logger.py ---------> forecast.py ---------> queue_agent.py ---> server.py (web + phone app)
  (ultrasonic,       data/live/run.csv    (Disney-trained         (Gemini function   LEDs, voice alert
   beam, button)     state.py             generic v2 model,       calling: calls
- camera ----------> camera_count.py      P10/P50/P90)            our tools, writes
-                    data/live/           live/ (Kalman +         prediction.json)
-                    queue_state.json     Bayesian rates)
+ camera ----------> camera_count.py +    P10/P50/P90)            our tools, writes
+(counts the queue)  tracker.py           live/ (Kalman +         prediction.json)
+                    data/live/           Bayesian rates)
+                    queue_state.json
 ```
 
 Numbers always come from Python (sensors, model, queueing maths). Gemini chooses which tools to
@@ -26,12 +27,12 @@ call, combines the results and explains the decision. It never invents a wait ti
 | Folder | What lives there | Owner |
 |---|---|---|
 | `hardware/` | Wiring, parts list, Arduino firmware | H1 (board), H2 (build + camera) |
-| `ingest/` | Serial → CSV logger, camera head count, live queue state | H1 / H2 |
+| `ingest/` | Camera people tracker (main sensor) and its accuracy check, serial → CSV logger, live queue state, data archive | H1 / H2 |
 | `model/` | `forecast.py` (one call: queue state → P10/P50/P90 for 15/30/60 min), exported models in `artifacts/`, live Kalman model | S1 |
 | `claude_model/` | Training and validation on Disney data (already done, see its README) | S1 |
 | `agent/` | Gemini function-calling agent | S2 + Gemini team |
 | `app/` | `server.py` + `web/` (web dashboard and installable phone app), Streamlit dashboard (`app.py`), ElevenLabs alert | S2 |
-| `data/` | `live/` (today), `replay/` (recorded rushes), `ground_truth/`, `sample/` (fake rows for dev) | everyone |
+| `data/` | `live/` (today, not in git), `archive/` (everything logged, committed by `ingest/archive.py`), `replay/` (each rush), `ground_truth/`, `sample/` (fake rows for dev) | everyone |
 | `docs/` | Data contract, architecture, timeline, pitch notes, open questions | everyone |
 | `notebooks/` | Disney backtest notebook and result charts | S1 |
 
@@ -96,15 +97,45 @@ cp .env.example .env      # add GEMINI_API_KEY and ELEVENLABS_API_KEY
 ```
 
 ## Run it
-Live (four terminals, `--port` from `python ingest/logger.py` with no arguments):
+The beams sit too close together to count people, so **the camera counts the queue**: it follows
+every person with an ID and counts who arrives and who is served (`ingest/tracker.py`). The board
+still gives the hand-count button, the ultrasonic and the LEDs.
+
+Live (six terminals, `--port` from `python ingest/logger.py` with no arguments):
 ```
-python ingest/logger.py --port COM3
-python ingest/state.py --smooth --watch 10      # rush times come from data/rushes.json
+python ingest/camera_count.py --set-zone        # once: click the queue area's corners, Enter
+python ingest/camera_count.py                   # people tracker -> data/live/camera.csv (--show to watch it)
+python ingest/logger.py --port COM3             # button, ultrasonic, LEDs -> data/live/run.csv
+python ingest/state.py --smooth --watch 10      # counts from the camera; rush times from data/rushes.json
 python agent/queue_agent.py --watch 10          # rules only without GEMINI_API_KEY, or --no-gemini
 python app/server.py                            # web + phone app; prints the address to open
+python ingest/archive.py --watch 10 --commit --push   # keeps all the sensor data (below)
 ```
-Leave all four running all night: the logger reconnects if the board resets or is unplugged,
-`state.py` stitches the counters back together and switches rush automatically.
+Leave them all running all night: the logger reconnects if the board resets or is unplugged,
+`camera_count.py` carries its counters on after a restart, `state.py` stitches the counters back
+together and switches rush automatically. `state.py` prints `counts from camera`; if the camera
+stops for more than 2 minutes it falls back to the beams (`--source camera` / `--source beams` to force).
+
+### Where the sensor data is kept
+`data/live/` is not in git. `ingest/archive.py --watch 10 --commit --push` copies it every 10 min
+into `data/archive/<date>/` (everything logged, every forecast made, camera detections per rush)
+and cuts each rush into `data/replay/<rush>_run.csv` + `<rush>_camera.csv`, then commits and
+pushes, so the data is on GitHub, timestamped, and off the laptop. Details: `docs/data_contract.md` §10.
+Leave out `--push` if the wifi is bad; it commits locally and pushes on a later round.
+
+### How well does the camera count? (and tuning it)
+```
+python ingest/camera_accuracy.py note 7          # whenever you can: "7 people in the queue now"
+python ingest/camera_accuracy.py tally           # if the button is not there: Enter per person served
+python ingest/camera_accuracy.py report --rush dinner      # camera vs hand count
+python ingest/camera_accuracy.py tune --rush dinner --save # re-run the tracker on the recorded
+                                                           # detections, keep the best settings
+```
+The served count is the test for distinct people: someone lost behind another person and given
+a new ID is counted twice, so *camera served > hand count* means double counting, *<* means
+missed people. On a simulated rush (people hidden 1-6 s at a time) re-identification by clothing
+colour cut 296 counted arrivals to 28 (truth 28); tuning on one rush took the served count from
+38 to 30 (truth 30). Tune on one rush, check with `report` on the next before quoting a number.
 
 ### Web and phone app
 `python app/server.py` prints two addresses (the laptop's wifi IP, port 8000):
@@ -132,8 +163,11 @@ Leave all four running all night: the logger reconnects if the board resets or i
    seen someone, so a dead sensor never counts), or after closing time. A short queue standing
    still before the food comes out is never wiped. Without ultrasonic or camera, up to 3
    phantom people can stay on screen until closing.
-3. **Hand count:** someone presses the button for every person served for 20 minutes.
-4. **After the rush:** `cp data/live/run.csv data/replay/<rush>_run.csv`, then check the forecast:
+3. **Hand count:** someone presses the button (or runs `camera_accuracy.py tally`) for every
+   person served for 20 minutes, and now and then counts the queue: `camera_accuracy.py note N`.
+4. **After the rush:** `archive.py` has already cut it into `data/replay/<rush>_run.csv` and
+   `<rush>_camera.csv` (run `python ingest/archive.py` once to be sure). Check the camera:
+   `python ingest/camera_accuracy.py report --rush <rush>`, then the forecast:
    `python model/backtest.py data/replay/<rush>_run.csv`. After two rushes, calibrate the bands:
    `python model/backtest.py data/replay/dinner_run.csv data/replay/midnight_run.csv --save`
    and check on the next one with `--check`.
@@ -141,13 +175,13 @@ Leave all four running all night: the logger reconnects if the board resets or i
    If the LEDs go off or the dashboard says *No update from the agent* during a rush, a
    process has stopped: restart it.
 
-Tests: `python tests/test_pipeline.py` (35 checks, about 40 s, includes both dashboards and the app server).
+Tests: `python tests/test_pipeline.py` (44 checks, about 50 s, includes both dashboards, the app server,
+the people tracker and the archive).
 
 Extras (each optional, each its own terminal):
 ```
 python app/alerts.py --watch 5                  # reads the recommendation aloud (ElevenLabs, else laptop voice)
-python ingest/camera_count.py --set-zone        # once: click the queue area's corners
-python ingest/camera_count.py --show            # head count -> data/live/camera.csv
+python ingest/fake_camera.py                    # fake detections + true serves, to try camera_accuracy.py
 ```
 Firmware: `hardware/firmware/queue_sensor/queue_sensor.ino` (pins in `hardware/README.md`).
 
@@ -158,5 +192,5 @@ streamlit run app/app.py -- --replay data/sample/fake_rush_run.csv --speed 30
 ```
 `data/sample/fake_rush_run.csv` (+ `fake_rush_camera.csv`) is a simulated 90-minute rush
 (`python ingest/fake_rush.py`). Add `--us-empty 400 --us-cm-per-person 25` and tick
-"Kalman smoothing" in the sidebar to see the error bars. Copy
-each real rush to `data/replay/<rush>_run.csv` and replay that instead.
+"Kalman smoothing" in the sidebar to see the error bars. Replay a real rush from
+`data/replay/<rush>_run.csv` instead (its `_camera.csv` is picked up automatically).

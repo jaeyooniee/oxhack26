@@ -1,7 +1,9 @@
 """Live queue state (owner: S1 / H1).
 
-Reads data/live/run.csv and writes the latest state to data/live/queue_state.json
-(docs/data_contract.md §4).
+Reads the arrival / served counters and writes the latest state to data/live/queue_state.json
+(docs/data_contract.md §4). The counters come from the camera tracker (data/live/camera.csv,
+ingest/camera_count.py) when it is running, otherwise from the beams (data/live/run.csv); the
+hand-count button and the ultrasonic always come from run.csv. See load_counts.
 
   arrivals_last_5m = in_total(now) - in_total(now - 5 min)
   served_last_5m   = out_total(now) - out_total(now - 5 min)
@@ -35,6 +37,7 @@ Usage:
   python ingest/state.py --watch 10                              # times from data/rushes.json
   python ingest/state.py --open 18:00 --close 19:30 --watch 10   # override the schedule
   python ingest/state.py --run data/sample/fake_rush_run.csv --now 2026-10-24T18:40:00
+  python ingest/state.py --source beams --watch 10   # ignore the camera's counters
 """
 import argparse
 import json
@@ -70,6 +73,8 @@ POSTED_SMOOTH_MIN = 3       # wait_now_min = median of the last 3 one-minute ins
 IDLE_RESET_MIN = 3          # after closing: nobody moving this long + small queue = drift
 US_EMPTY_S = 60             # calibrated ultrasonic sees an empty queue this long = drift
 CAM_EMPTY_S = 120           # camera counts 0 people this long = drift
+CAMERA_STALE_S = 120        # source "auto": the camera's counters are used unless this far behind run.csv
+CAMERA_COUNTERS = ("in_total", "out_total")
 COUNTERS = ("in_total", "out_total", "btn_total")
 
 
@@ -115,6 +120,58 @@ def load_camera(path: Path = CAMERA_CSV) -> pd.DataFrame | None:
     if cam.empty or "people_in_zone" not in cam:
         return None
     return cam.sort_values("wall_time").drop_duplicates("wall_time", keep="last").set_index("wall_time")
+
+
+def has_tracker_counts(camera: pd.DataFrame | None) -> bool:
+    """camera.csv written by the tracking camera_count.py (not the old head-count-only one)."""
+    return camera is not None and all(c in camera for c in CAMERA_COUNTERS)
+
+
+def camera_counts(camera: pd.DataFrame, run: pd.DataFrame | None = None) -> pd.DataFrame:
+    """The camera tracker's in_total / out_total in the run.csv layout, so everything downstream
+    works unchanged. btn_total (hand count) and dist_cm (ultrasonic) are taken from run.csv when
+    there is one (already reset-stitched), else 0 and -1. attrs["source"] = "camera"."""
+    cam = stitch_resets(camera[list(CAMERA_COUNTERS)].astype(float))  # camera_count.py restarts
+    df = cam.copy()
+    if run is not None and not run.empty:
+        for c, default in (("btn_total", 0.0), ("dist_cm", -1.0)):
+            if c in run:
+                df[c] = np.where(df.index < run.index[0], default, _asof(run, df.index, c))
+            else:
+                df[c] = default
+    else:
+        df["btn_total"], df["dist_cm"] = 0.0, -1.0
+    df.attrs["resets"] = (run.attrs.get("resets", 0) if run is not None else 0)
+    df.attrs["camera_resets"] = cam.attrs.get("resets", 0)
+    df.attrs["source"] = "camera"
+    return df
+
+
+def load_counts(run_path: Path = RUN_CSV, camera_path: Path | None = CAMERA_CSV, source: str = "auto") -> pd.DataFrame:
+    """Counters for the queue maths, in the run.csv layout (df.attrs["source"] says where from).
+
+    source "camera": the camera tracker's arrivals / served (camera.csv); "beams": run.csv;
+    "auto" (default): the camera when camera.csv has tracker counts and is not more than
+    CAMERA_STALE_S behind run.csv, else the beams. The beams sit too close together to count
+    people at the food point, so the camera is the main sensor."""
+    camera = load_camera(camera_path) if camera_path is not None else None
+    tracked = has_tracker_counts(camera)
+    try:
+        run = load_run(run_path)
+    except (OSError, ValueError, KeyError, pd.errors.EmptyDataError, pd.errors.ParserError):
+        if source == "beams" or not tracked:
+            raise
+        run = None
+    if source == "camera" and not tracked:
+        raise ValueError(f"{camera_path} has no tracker counts (in_total, out_total): "
+                         "start the new ingest/camera_count.py")
+    use_camera = source == "camera" or (
+        source == "auto" and tracked
+        and (run is None or camera.index[-1] >= run.index[-1] - pd.Timedelta(seconds=CAMERA_STALE_S)))
+    if use_camera:
+        return camera_counts(camera, run)
+    run.attrs["source"] = "beams"
+    return run
 
 
 def load_ultrasonic(path: Path = ULTRASONIC_JSON) -> dict | None:
@@ -355,6 +412,8 @@ def state_and_history(run_rows: pd.DataFrame, now: datetime | None = None,
         extra["rush"] = rush
     if run_rows.attrs.get("resets"):
         extra["board_resets"] = run_rows.attrs["resets"]
+    if run_rows.attrs.get("source"):
+        extra["counts_from"] = run_rows.attrs["source"]
     state = {
         "timestamp": now.strftime("%Y-%m-%dT%H:%M:%S"),
         "status": status,
@@ -409,7 +468,9 @@ def read_json(path: Path) -> dict | None:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--run", type=Path, default=RUN_CSV)
-    ap.add_argument("--camera", type=Path, default=CAMERA_CSV, help="camera.csv, used as drift evidence")
+    ap.add_argument("--camera", type=Path, default=CAMERA_CSV, help="camera.csv: counters and drift evidence")
+    ap.add_argument("--source", default="auto", choices=["auto", "camera", "beams"],
+                    help="where arrivals / served come from (auto: the camera tracker when it is running)")
     ap.add_argument("--out", type=Path, default=STATE_JSON)
     ap.add_argument("--schedule", type=Path, default=SCHEDULE_JSON, help="rush opening/closing times")
     ap.add_argument("--open", dest="venue_open", help="HH:MM, overrides the schedule")
@@ -433,16 +494,16 @@ def main() -> None:
                 schedule = load_schedule(args.schedule) or schedule
             us = ({"us_empty_cm": args.us_empty, "us_cm_per_person": args.us_cm_per_person}
                   if args.us_empty and args.us_cm_per_person else load_ultrasonic())
-            df = load_run(args.run)
+            df = load_counts(args.run, args.camera, args.source)
             now = pd.Timestamp(args.now) if args.now else df.index[-1]
             r = resolve_rush(now.to_pydatetime(), schedule) if schedule else \
                 {"name": None, "open": args.venue_open, "close": args.venue_close}
-            note = (r["name"], r["open"], r["close"], bool(us), args.smooth)
+            note = (r["name"], r["open"], r["close"], bool(us), args.smooth, df.attrs["source"])
             if note != last_note:
                 times = f"{r['open']}-{r['close']}" if r["open"] else "whole file, no times"
                 print(f"rush: {r['name'] or '(no schedule)'} ({times}) | ultrasonic "
                       f"{'calibrated' if us else 'not calibrated: drift only resets after closing or via the camera'}"
-                      f" | {'kalman' if args.smooth else 'plain'}")
+                      f" | {'kalman' if args.smooth else 'plain'} | counts from {df.attrs['source']}")
                 last_note = note
             state = compute_state(df, now, r["open"], r["close"], args.served, live={} if args.smooth else None,
                                   rush=r["name"], ultrasonic=us, camera=load_camera(args.camera))

@@ -1,5 +1,6 @@
 pandas
 numpy
+scipy  # people tracker (comes with lightgbm anyway)
 lightgbm
 matplotlib
 pyserial

@@ -290,7 +290,7 @@ function render(snap) {
 
   const sen = snap && snap.sensors, hb = snap && snap.heartbeat_age_s;
   setText("sensor-line", !snap ? "" : !sen ? "No sensor readings yet." : [
-    `Sensor: HC-SR04 ${sen.dist_cm === null ? "no echo" : num(sen.dist_cm, 0) + " cm"}, beams in ${sen.in} out ${sen.out}, hand count ${sen.btn}.`,
+    `Sensor: HC-SR04 ${sen.dist_cm === null ? "no echo" : num(sen.dist_cm, 0) + " cm"}, ${sen.counts_from === "camera" ? "camera" : "beams"} in ${sen.in} out ${sen.out}, hand count ${sen.btn}.`,
     `Last reading ${sen.last_row}.`,
     snap.mode === "live" ? (hb === null || hb === undefined ? "No agent heartbeat." : `Agent checked ${Math.round(hb)} s ago.`) : "Replay of a recorded file.",
     sen.board_resets ? `Board resets stitched: ${sen.board_resets}.` : "",

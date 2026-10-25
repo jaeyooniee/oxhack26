@@ -15,6 +15,9 @@ Usage:
   python model/backtest.py data/replay/dinner_run.csv data/replay/midnight_run.csv --save
                                                                        # fit k on both rushes
   python model/backtest.py data/replay/breakfast_run.csv --check       # coverage with saved k
+
+<rush>_camera.csv next to each <rush>_run.csv is picked up: its tracker counts are used in place
+of the beams, as ingest/state.py does live (--source beams to ignore the camera).
 """
 import argparse
 import json
@@ -28,7 +31,7 @@ import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from ingest.state import compute_state, load_run, load_schedule, resolve_rush, state_and_history  # noqa: E402
+from ingest.state import compute_state, load_counts, load_schedule, resolve_rush, state_and_history  # noqa: E402
 from model import forecast as fc  # noqa: E402
 
 TARGET = 0.8
@@ -86,17 +89,21 @@ def main():
     ap.add_argument("--smooth", action="store_true", help="use the Kalman state, as state.py --smooth")
     ap.add_argument("--save", action="store_true", help=f"fit k and write {fc.CALIBRATION_JSON.name}")
     ap.add_argument("--check", action="store_true", help="report with the saved calibration applied")
+    ap.add_argument("--source", default="auto", choices=["auto", "camera", "beams"],
+                    help="arrivals / served from the camera tracker (<rush>_camera.csv) or the beams")
     args = ap.parse_args()
 
     parts, rushes = [], []
     for path in args.runs:
-        df = load_run(path)
+        cam = path.with_name(path.name.replace("_run.csv", "_camera.csv"))
+        df = load_counts(path, cam if cam != path else None, args.source)
         if args.venue_open:
             venue_open, venue_close = args.venue_open, args.venue_close
         else:
             r = resolve_rush(df.index[-1].to_pydatetime(), load_schedule())
             venue_open, venue_close = r["open"], r["close"]
-            print(f"{path.name}: rush {r['name']} ({venue_open}-{venue_close}) from data/rushes.json")
+            print(f"{path.name}: rush {r['name']} ({venue_open}-{venue_close}) from data/rushes.json, "
+                  f"counts from {df.attrs['source']}")
         parts.append(run(df, venue_open, venue_close, {} if args.smooth else None, calibrated=args.check))
         rushes.append(f"{path.name} {venue_open}-{venue_close}")
     rep = report(pd.concat(parts))
