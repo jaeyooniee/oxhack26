@@ -31,7 +31,7 @@ from ingest.state import read_json, write_json  # noqa: E402
 from model.forecast import forecast  # noqa: E402
 
 PREDICTION_JSON = ROOT / "data" / "live" / "prediction.json"
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite")  # free tier: 20 requests/day per model
 MAX_WAIT_MIN = 5.0     # "a short queue" for the probability tool
 MIN_SAVING_MIN = 3     # recommend waiting only if the net saving (below) is at least this much
 DELAY_COST = 0.1       # each minute you put off going must save 0.1 min of queue: 30 min later must save 3 more
