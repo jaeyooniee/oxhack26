@@ -20,6 +20,12 @@
       "port": 8000
     },
     {
+      "name": "app-replay-breakfast",
+      "runtimeExecutable": ".venv/bin/python",
+      "runtimeArgs": ["app/server.py", "--host", "0.0.0.0", "--port", "8002", "--replay", "data/replay/breakfast_run.csv", "--speed", "30"],
+      "port": 8002
+    },
+    {
       "name": "app-live",
       "runtimeExecutable": "python",
       "runtimeArgs": ["app/server.py", "--host", "127.0.0.1", "--port", "8001"],

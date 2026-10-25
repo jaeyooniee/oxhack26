@@ -1,212 +1,187 @@
 # QueueTime: forecast the queue, spend your time elsewhere
 
-OxHack 2026 · HRT challenge "Best use of data for prediction & decision making" · theme: TIME
-
-A £10 sensor measures a real queue (the OxHack food point). A model trained on years of public
+A £10 sensor box and a phone camera measure a real queue. A model trained on years of public
 Disney World wait-time data forecasts the wait 15–60 minutes ahead with honest uncertainty
-bands. A Gemini agent turns the numbers into a decision: "go now" or "go at 18:40, save ~9 min".
+bands. A Gemini agent turns the numbers into a decision, "go now" or "go at 12:40, save ~9 min",
+spoken aloud by ElevenLabs, shown on a web dashboard and an installable phone app, and lit up
+on LEDs at the queue. Every reading streams into Tiger Cloud (TimescaleDB) so the whole day can
+be queried.
+
+Built in 24 hours at OxHack 2026 for the HRT challenge "best use of data for prediction &
+decision making" (theme: TIME) and tested on the hackathon's own food queue. MIT licensed:
+take it, point it at your queue, and change whatever you like. The last section says where to
+start.
 
 ## How it fits together
 
 ```
- hardware/          ingest/              model/                 agent/              app/
- Arduino sensors -> logger.py ---------> forecast.py ---------> queue_agent.py ---> server.py (web + phone app)
- (ultrasonic,       data/live/run.csv    (Disney-trained         (Gemini function   LEDs, voice alert
-  beam, button)     state.py             generic v2 model,       calling: calls
- camera ----------> camera_count.py +    P10/P50/P90)            our tools, writes
-(counts the queue)  tracker.py           live/ (Kalman +         prediction.json)
-                    data/live/           Bayesian rates)
-                    queue_state.json
+ Arduino UNO R4 WiFi ──USB──► ingest/logger.py ──► data/live/run.csv ─┐
+ (ultrasonic, button, LEDs;                                            │
+  on-board queue estimate)                                             ▼
+                                                              ingest/state.py ──► queue_state.json
+ iPhone / webcam ──► ingest/camera_count.py ──► camera.csv ───┘              │
+ (YOLO people tracker;                                                       ▼
+  counts only, no images)                              model/forecast.py (LightGBM, P10/P50/P90)
+                                                                             │
+                                                                             ▼
+                              agent/queue_agent.py (Gemini function calling) ──► prediction.json
+                                                                             │
+                 ┌───────────────────────────┬───────────────────────────────┤
+                 ▼                           ▼                               ▼
+   app/server.py (dashboard + phone app)   app/alerts.py (ElevenLabs voice)   LEDs (back over USB)
+
+ ingest/tigerdata.py streams every row into Tiger Cloud; ingest/archive.py commits it to git.
 ```
 
 Numbers always come from Python (sensors, model, queueing maths). Gemini chooses which tools to
-call, combines the results and explains the decision. It never invents a wait time.
+call, combines the results and explains the decision; if it invents a number the rule-based
+answer replaces it, and if it is unavailable the rules take over and the system keeps running.
 
-## Folder map
+## Quick start without any hardware (5 minutes)
 
-| Folder | What lives there | Owner |
-|---|---|---|
-| `hardware/` | Wiring, parts list, Arduino firmware | H1 (board), H2 (build + camera) |
-| `ingest/` | Camera people tracker (main sensor) and its accuracy check, serial → CSV logger, live queue state, data archive | H1 / H2 |
-| `model/` | `forecast.py` (one call: queue state → P10/P50/P90 for 15/30/60 min), exported models in `artifacts/`, live Kalman model | S1 |
-| `claude_model/` | Training and validation on Disney data (already done, see its README) | S1 |
-| `agent/` | Gemini function-calling agent | S2 + Gemini team |
-| `app/` | `server.py` + `web/` (web dashboard and installable phone app), Streamlit dashboard (`app.py`), ElevenLabs alert | S2 |
-| `data/` | `live/` (today, not in git), `archive/` (everything logged, committed by `ingest/archive.py`), `replay/` (each rush), `ground_truth/`, `sample/` (fake rows for dev) | everyone |
-| `docs/` | Data contract, architecture, timeline, pitch notes, open questions | everyone |
-| `notebooks/` | Disney backtest notebook and result charts | S1 |
+```
+git clone https://github.com/jaeyooniee/oxhack26.git && cd oxhack26
+python -m venv .venv && source .venv/bin/activate      # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+python app/server.py --replay data/replay/breakfast_run.csv --speed 30
+```
 
-## Using the forecast
+Open the address it prints. That is a real morning at the OxHack food point replayed at 30×:
+the queue, the wait, the forecast bands and the recommendation, with pause and jump controls.
+`data/sample/fake_rush_run.csv` is a simulated 90-minute rush if you want something busier.
+
+Try the forecast on its own:
 ```python
 from model.forecast import forecast
 forecast(queue_state)  # -> [{"horizon_min": 15, "p10": .., "p50": .., "p90": ..}, ... 30, 60]
 ```
-Try it: `python model/forecast.py data/sample/queue_state_sample.json`. Test scores in `model/README.md`.
+`python model/forecast.py data/sample/queue_state_sample.json` prints one. Scores in `model/README.md`.
 
-## Schedule
+Tests: `python tests/test_pipeline.py` (45 checks, about 50 s). On Apple Silicon, LightGBM needs
+`libomp` (`brew install libomp` with an arm64 Homebrew).
 
-Hacking ends **12:00 Sunday**; judging **13:00–15:45**. Three food rushes to record before then.
-H1 = board, H2 = build + camera, S1 = model, S2 = dashboard + Gemini.
+## Running it on a real queue
 
-### Saturday afternoon: everything working separately
-| Time | Hardware (H1, H2) | Software (S1, S2) |
-|---|---|---|
-| 15:30 | Push repo to GitHub (one person) | |
-| 15:40 | H1 blink test (swap board by 16:00 if it fails); H2 webcam + USB extension | S1 load Disney data; S2 install requirements, run dashboard |
-| 16:15 | H1 ultrasonic → beam → button → LEDs, one at a time; H2 scout food point, ask organisers, build mounts | S1 baseline backtest; S2 dashboard |
-| 17:00 | H1 `ingest/logger.py` writing `data/live/run.csv`; H2 `ingest/camera_count.py --show`, set the zone | S1 LightGBM vs baselines ✅ done; S2 Gemini sentence (MLH workshop 17:30, C1) |
-| 17:30 | All four: fake queue test (10 min): beam vs button vs camera | |
-| 17:45 | Everything mounted and logging at the Food Collection Point | S2 point dashboard at live `run.csv` |
+### Parts (about £10 plus a phone or webcam)
+- Arduino UNO R4 WiFi (Arm Cortex-M4) and a USB **data** cable
+- HC-SR04 ultrasonic distance sensor
+- Push button (hand count for checking accuracy)
+- LEDs (green = go now, amber = wait) with 220 Ω resistors
+- Breadboard and jumpers
+- A camera the laptop can open: an iPhone over Continuity Camera, or any USB webcam
 
-### Saturday evening: first real data
-| Time | What happens |
-|---|---|
-| 18:00–19:00 | **Dinner rush.** One person presses the button for each person served for 20 min. **Write down food announcement + serving start/end times.** |
-| 19:00–21:00 | S1 `ingest/state.py` on dinner data, sensor error (beam vs button), forecast-vs-actual for dinner, "minutes to next food drop" feature. S2 ElevenLabs alert, dinner chart. H1 two-beam direction. H2 fix and tidy the mount. |
-| 21:00–23:30 | Connect it all: state → forecast → Gemini → `prediction.json` → LEDs + dashboard. C++ estimator only if everything else works. |
-| 23:45 | Check logging and camera are running |
-| 23:55 | **Save the forecast and commit it to git before the pizza arrives** (timestamped proof) |
-| 00:00–00:30 | **Midnight pizza** recorded; compare with the 23:55 forecast |
-| 00:30 | Make the demo replayable from the CSV; sleep in shifts, check the logger every 1–2 h |
+Wiring and a step-by-step build with a check after each step: `hardware/README.md`.
+Firmware: `queuetime_v2/queue_sensor.ino` (the version that ran at the hackathon; it also
+estimates arrival rate, service rate and the wait on the board itself). Upload it with the
+Arduino IDE, open the Serial Monitor at 115200 baud and you should see one JSON line per second.
+Close the Serial Monitor before running the logger: only one program can use the port.
 
-### Sunday morning: finish and freeze
-| Time | What happens |
-|---|---|
-| 08:00–09:00 | **Breakfast rush** recorded (third test) |
-| 09:00 | **Feature freeze.** One person to the Devpost workshop (C1) |
-| 09:00–11:00 | Final charts (Disney backtest, three rushes forecast vs actual, sensor vs camera), README, wiring photos, Devpost text, backup demo video |
-| 11:00–11:45 | Rehearse the 60-second pitch and judge questions twice (`docs/pitch_notes.md`) |
-| 12:00 | Hacking ends. Devpost submitted before this |
-| 12:00–13:00 | Leave the logger running: lunch is a live fourth rush during judging |
-| 13:00–15:45 | Judging at our table: sensor box, live dashboard, replay as backup, repo QR code |
-
-## Start here
-1. Read `docs/data_contract.md`. It is the agreement between all four people.
-2. Build against `data/sample/` until real data arrives (rule 1: nobody waits on anyone).
-3. Check `docs/open_questions.md` before the pitch.
-
-## Rules
-1. Nobody waits on anyone: use sample or replay data until the real data arrives.
-2. Keep the hand count going: 20 minutes of button presses per rush makes the accuracy claim believable.
-3. 09:00 Sunday feature freeze is real. Unfinished extras get cut, not rushed.
-
-## Setup
+### Keys
 ```
-pip install -r requirements.txt
-cp .env.example .env      # add GEMINI_API_KEY and ELEVENLABS_API_KEY
+cp .env.example .env
 ```
+Add `GEMINI_API_KEY` (aistudio.google.com; the free tier allows 20 requests per day per
+model), `ELEVENLABS_API_KEY` (optional; without it the laptop's own voice is used) and
+`TIGER_DATABASE_URL` (optional; from Tiger Console). Everything runs without any key: rules
+replace Gemini, the OS voice replaces ElevenLabs, and the CSV files are the database.
 
-## Run it
-The beams sit too close together to count people, so **the camera counts the queue**: it follows
-every person with an ID and counts who arrives and who is served (`ingest/tracker.py`). The board
-still gives the hand-count button, the ultrasonic and the LEDs.
-
-Live (six terminals, `--port` from `python ingest/logger.py` with no arguments):
+### Start it (one terminal each; leave them running)
 ```
-python ingest/camera_count.py --set-zone        # once: click the queue area's corners, Enter
-python ingest/camera_count.py                   # people tracker -> data/live/camera.csv (--show to watch it)
-python ingest/logger.py --port COM3             # button, ultrasonic, LEDs -> data/live/run.csv
-python ingest/state.py --smooth --watch 10      # counts from the camera; rush times from data/rushes.json
-python agent/queue_agent.py --watch 10          # rules only without GEMINI_API_KEY, or --no-gemini
-python app/server.py                            # web + phone app; prints the address to open
-python ingest/archive.py --watch 10 --commit --push   # keeps all the sensor data (below)
-python ingest/tigerdata.py sync --watch 10      # streams it into Tiger Cloud (below)
+python ingest/camera_count.py --set-zone --cam 1   # once: click the corners of the queue floor, Enter
+python ingest/camera_count.py --cam 1 --show       # people tracker -> data/live/camera.csv
+python ingest/logger.py --port /dev/cu.usbmodem…   # board -> data/live/run.csv (run with no --port to list ports)
+python ingest/state.py --smooth --watch 10         # queue state from the counts
+python agent/queue_agent.py --watch 10             # Gemini agent (rules only without a key, or --no-gemini)
+python app/server.py                               # web dashboard + phone app, prints the address
+python app/alerts.py --watch 5                     # voice alert when the recommendation changes
+python ingest/tigerdata.py sync --watch 10         # stream into Tiger Cloud (after `tigerdata.py setup` once)
+python ingest/archive.py --watch 10 --commit --push  # keep every reading in git
 ```
-Leave them all running all night: the logger reconnects if the board resets or is unplugged,
-`camera_count.py` carries its counters on after a restart, `state.py` stitches the counters back
-together and switches rush automatically. `state.py` prints `counts from camera`; if the camera
-stops for more than 2 minutes it falls back to the beams (`--source camera` / `--source beams` to force).
+`--cam 0` is usually the laptop's own camera and `--cam 1` an attached phone or webcam. Draw
+the zone generously: it should contain everyone who is queueing, with a margin, and the only
+edge people cross should be the front, where they are served and walk away. A zone that is too
+tight makes people flicker in and out and inflates the served count (we learned this the hard
+way, see `data/ground_truth/NOTES.md`).
 
-### Where the sensor data is kept
-`data/live/` is not in git. `ingest/archive.py --watch 10 --commit --push` copies it every 10 min
-into `data/archive/<date>/` (everything logged, every forecast made, camera detections per rush)
-and cuts each rush into `data/replay/<rush>_run.csv` + `<rush>_camera.csv`, then commits and
-pushes, so the data is on GitHub, timestamped, and off the laptop. Details: `docs/data_contract.md` §10.
-Leave out `--push` if the wifi is bad; it commits locally and pushes on a later round.
+The processes are independent: the logger reconnects if the board resets, the camera carries
+its counters across a restart, and `state.py` stitches the counters back together. Opening and
+closing times of each rush live in `data/rushes.json`; between rushes the dashboard says *Closed*.
+
+### Phone app
+`python app/server.py` prints the laptop's wifi address. Anyone on the same network opens
+`http://<ip>:8000/phone` and chooses *Add to Home Screen*. "Ping me at 12:35" alarms when the
+time comes while the page is open. If the venue wifi isolates devices, use a phone hotspot.
+
+### Checking the camera against a hand count
+```
+python ingest/camera_accuracy.py tally            # Enter once per person served
+python ingest/camera_accuracy.py note 7           # "7 people in the queue right now"
+python ingest/camera_accuracy.py report --rush lunch
+python ingest/camera_accuracy.py tune --rush lunch --save   # fit the tracker to the hand count
+```
+Tune on one rush and check with `report` on another before trusting the result: on a single
+10-minute recording, tuned settings fitted that recording and nothing else.
 
 ### Time series in Tiger Cloud
-`ingest/tigerdata.py` streams every new camera, board, queue-state, forecast and hand-count row
-into Tiger Cloud hypertables (TimescaleDB), with a per-minute continuous aggregate `queue_1min`
-that the database keeps up to date. Once:
-1. Tiger Console → *New service* → download the config; put its connection string in `.env` as
-   `TIGER_DATABASE_URL=postgres://...`.
-2. `python ingest/tigerdata.py setup` (creates the hypertables and `queue_1min`).
+`ingest/tigerdata.py` keeps one hypertable per source (`board_readings`, `camera_counts`,
+`queue_states`, `predictions`, hand counts) and a per-minute continuous aggregate `queue_1min`.
+Only new rows are sent, so it can be stopped and restarted freely. In Tiger Console's SQL editor:
+`SELECT * FROM queue_1min ORDER BY minute DESC LIMIT 30;` or, in a terminal,
+`python ingest/tigerdata.py query`. Tables: `docs/data_contract.md` §11.
 
-Then leave `python ingest/tigerdata.py sync --watch 10` running. Only new rows are sent, so it can
-be stopped, restarted or left offline and catches up. `python ingest/tigerdata.py query` shows the
-last 30 min per minute; in Tiger Console's SQL editor, e.g.
-`SELECT * FROM queue_1min ORDER BY minute DESC LIMIT 30;`
-A recorded night loads the same way: `sync --live data/archive/<date> --site replay`.
-Tables: `docs/data_contract.md` §11.
+## What we measured
 
-### How well does the camera count? (and tuning it)
-```
-python ingest/camera_accuracy.py note 7          # whenever you can: "7 people in the queue now"
-python ingest/camera_accuracy.py tally           # if the button is not there: Enter per person served
-python ingest/camera_accuracy.py report --rush dinner      # camera vs hand count
-python ingest/camera_accuracy.py tune --rush dinner --save # re-run the tracker on the recorded
-                                                           # detections, keep the best settings
-```
-The served count is the test for distinct people: someone lost behind another person and given
-a new ID is counted twice, so *camera served > hand count* means double counting, *<* means
-missed people. On a simulated rush (people hidden 1-6 s at a time) re-identification by clothing
-colour cut 296 counted arrivals to 28 (truth 28); tuning on one rush took the served count from
-38 to 30 (truth 30). Tune on one rush, check with `report` on the next before quoting a number.
+| Test | Result |
+|---|---|
+| People detection (5 people, 10:00 test) | 4.4 seen per frame on average; within ±1 of the truth in 87% of frames |
+| People served (breakfast, 3 people looping, untuned) | camera 35 vs hand count 30 (+17%) |
+| Forecast vs "no change" baseline (breakfast, MAE) | 15 min: 0.71 vs 0.72 · 30 min: **0.58 vs 0.66** · 60 min: **0.76 vs 0.84** |
+| 80% band coverage (breakfast) | 43% / 80% / 70% at 15 / 30 / 60 min |
+| Disney 2019 holdout (never seen in training) | model beats "no change" at every horizon; see `model/README.md` |
 
-### Web and phone app
-`python app/server.py` prints two addresses (the laptop's wifi IP, port 8000):
-- `http://<ip>:8000/` is the web dashboard (projector, judges' table).
-- `http://<ip>:8000/phone` is the phone app. Anyone on the same wifi opens it; *Add to Home
-  Screen* (iOS Share menu, Android browser menu) puts it on their phone like an app.
-- *Ping me at 18:35* beeps, vibrates and shows a full-screen alarm when the time comes, while the
-  page is open. System notifications in the background need https (browsers block them over
-  plain http on a local network), so tell people to keep the page open.
-- If Windows asks whether Python may accept connections, allow it on *private* networks, or
-  phones can't connect. Hackathon wifi that isolates devices also blocks it: then use a phone
-  hotspot from the laptop.
-- Replay for the demo backup: `python app/server.py --replay data/replay/dinner_run.csv --speed 30`;
-  the web page shows pause and jump controls.
-- The Streamlit dashboard (`streamlit run app/app.py`) still works and shows the same numbers.
+Breakfast waits never exceeded two minutes, so the live errors are small because the queue was.
+`data/ground_truth/NOTES.md` has what really happened in each test, including our own counting
+mistakes. The camera never stores images: only box coordinates and counts.
 
-### Checklist for each rush
-1. **Times:** as soon as the organisers announce it, correct the rush's `open`/`close` in
-   `data/rushes.json` (no restart needed). `state.py` prints `rush: <name>` when it switches; check it.
-2. **Ultrasonic** (once, at the food point, logger running): with nobody queueing run
-   `python ingest/calibrate_ultrasonic.py --empty`, then with N people standing in line
-   `python ingest/calibrate_ultrasonic.py --people N`. `state.py` picks it up on its next cycle.
-   Beam drift (the exit beam missing people) is only reset when another sensor proves nobody
-   is there: the calibrated ultrasonic for 1 min or the camera for 2 min (each only after it has
-   seen someone, so a dead sensor never counts), or after closing time. A short queue standing
-   still before the food comes out is never wiped. Without ultrasonic or camera, up to 3
-   phantom people can stay on screen until closing.
-3. **Hand count:** someone presses the button (or runs `camera_accuracy.py tally`) for every
-   person served for 20 minutes, and now and then counts the queue: `camera_accuracy.py note N`.
-4. **After the rush:** `archive.py` has already cut it into `data/replay/<rush>_run.csv` and
-   `<rush>_camera.csv` (run `python ingest/archive.py` once to be sure). Check the camera:
-   `python ingest/camera_accuracy.py report --rush <rush>`, then the forecast:
-   `python model/backtest.py data/replay/<rush>_run.csv`. After two rushes, calibrate the bands:
-   `python model/backtest.py data/replay/dinner_run.csv data/replay/midnight_run.csv --save`
-   and check on the next one with `--check`.
-5. **Between rushes** the dashboard says *Closed* (with the next rush) and the LEDs are off.
-   If the LEDs go off or the dashboard says *No update from the agent* during a rush, a
-   process has stopped: restart it.
+## Folder map
 
-Tests: `python tests/test_pipeline.py` (45 checks, about 50 s, includes both dashboards, the app server,
-the people tracker and the archive).
+| Folder | What lives there |
+|---|---|
+| `queuetime_v2/` | Firmware that ran on the board: sensors, on-board queue estimate, one JSON line per second |
+| `hardware/` | Parts, wiring, build steps; `firmware/` holds the earlier, simpler firmware |
+| `ingest/` | Camera people tracker (`camera_count.py`, `tracker.py`), serial logger, queue state, accuracy check, archive, Tiger Cloud sync |
+| `model/` | `forecast.py` (queue state → P10/P50/P90 for 15/30/60 min), exported LightGBM models, Kalman live model, backtest |
+| `claude_model/` | Training and validation on the Disney data |
+| `agent/` | Gemini function-calling agent and its tools |
+| `app/` | `server.py` + `web/` (dashboard and phone app), Streamlit dashboard, ElevenLabs alert |
+| `data/` | `live/` (today, not in git), `archive/` (everything logged), `replay/` (each rush), `ground_truth/`, `sample/` |
+| `docs/` | Data contract, architecture, open questions, pitch notes, hackathon schedule |
 
-Extras (each optional, each its own terminal):
-```
-python app/alerts.py --watch 5                  # reads the recommendation aloud (ElevenLabs, else laptop voice)
-python ingest/fake_camera.py                    # fake detections + true serves, to try camera_accuracy.py
-```
-Firmware: `hardware/firmware/queue_sensor/queue_sensor.ino` (pins in `hardware/README.md`).
+## Adapting it to your queue, and where to take it next
 
-Replay (no sensor needed; also the backup demo):
-```
-python app/server.py --replay data/sample/fake_rush_run.csv --speed 30
-streamlit run app/app.py -- --replay data/sample/fake_rush_run.csv --speed 30
-```
-`data/sample/fake_rush_run.csv` (+ `fake_rush_camera.csv`) is a simulated 90-minute rush
-(`python ingest/fake_rush.py`). Add `--us-empty 400 --us-cm-per-person 25` and tick
-"Kalman smoothing" in the sidebar to see the error bars. Replay a real rush from
-`data/replay/<rush>_run.csv` instead (its `_camera.csv` is picked up automatically).
+The pieces talk through small CSV and JSON files described in `docs/data_contract.md`, so each
+can be replaced on its own.
+
+- **A different queue.** Edit `data/rushes.json` with your opening hours and draw a new zone.
+  Nothing else assumes a food point.
+- **A different camera or detector.** `camera_count.py` takes any OpenCV camera index or a
+  video file. It uses YOLOv8n when `ultralytics` is installed and OpenCV's HOG detector
+  otherwise; swap in your own detector by returning boxes to `Tracker`.
+- **No laptop: run it on Arm.** The tracker is plain Python + OpenCV + YOLOv8n, so it runs on a
+  Raspberry Pi 5 or any Arm single-board computer with a camera, with the Arduino on its USB
+  port. The UNO R4's Cortex-M4 already computes arrival rate, service rate and an Erlang wait
+  probability on the board (`queuetime_v2/queue_sensor.ino`), so a next step is to move the
+  "go now / wait" decision there too and drive the LEDs with no computer at all.
+- **A different model.** `model/forecast.py` is one function from a queue state to three
+  quantiles. Retrain with `model/export.py` on your own history, or replace it with anything
+  that returns the same shape. The Disney data and experiments are in `claude_model/`.
+- **A different LLM or voice.** `agent/queue_agent.py` uses Gemini function calling against
+  the tools in `agent/tools.py`; the tools are the contract, the model is a few lines.
+  `app/alerts.py` calls ElevenLabs' REST API and falls back to the OS voice.
+- **A different database.** `ingest/tigerdata.py` is plain SQL through psycopg; it creates
+  hypertables when TimescaleDB is present and ordinary tables when it is not.
+
+Known gaps, honestly: `docs/open_questions.md`. Pull requests welcome.
+
+## Team
+Built at OxHack 2026 by the QueueTime team. MIT License.
