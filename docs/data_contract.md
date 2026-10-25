@@ -145,3 +145,16 @@ every 10 minutes into folders that are:
 | `data/archive/<date>/*.json` | Camera zone, ultrasonic calibration, tracker settings |
 | `data/replay/<rush>_run.csv`, `<rush>_camera.csv` | Each rush cut out (§7) |
 | `data/ground_truth/` | §6, §9 |
+
+## 11. Tiger Cloud tables (`ingest/tigerdata.py`)
+Hypertables partitioned by `time` (TIMESTAMPTZ, the laptop's local time converted), each with a
+`site` column (default `oxhack-food-point`):
+| Table | From | Columns |
+|---|---|---|
+| `camera_counts` | §3 | people_in_zone, in_total, out_total, distinct_total, tracked_in_zone |
+| `board_readings` | §2 | dist_cm, in_total, out_total, btn_total |
+| `queue_states` | §4 | rush, status, counts_from, queue_length, wait_now_min, service_rate_per_min, arrivals_last_5m, served_last_5m, state (JSONB, everything) |
+| `predictions` | §5 | state_time, recommendation, best_time, minutes_saved, wait_now_min, p10/p50/p90 _15/_30/_60, source, explanation, prediction (JSONB) |
+| `hand_counts` | §6 | rush, event |
+| `queue_counts` | §9 | rush, people |
+| `queue_1min` (continuous aggregate) | camera_counts | minute, site, queue_avg, queue_max, heads_max, arrived, served |

@@ -110,6 +110,7 @@ python ingest/state.py --smooth --watch 10      # counts from the camera; rush t
 python agent/queue_agent.py --watch 10          # rules only without GEMINI_API_KEY, or --no-gemini
 python app/server.py                            # web + phone app; prints the address to open
 python ingest/archive.py --watch 10 --commit --push   # keeps all the sensor data (below)
+python ingest/tigerdata.py sync --watch 10      # streams it into Tiger Cloud (below)
 ```
 Leave them all running all night: the logger reconnects if the board resets or is unplugged,
 `camera_count.py` carries its counters on after a restart, `state.py` stitches the counters back
@@ -122,6 +123,21 @@ into `data/archive/<date>/` (everything logged, every forecast made, camera dete
 and cuts each rush into `data/replay/<rush>_run.csv` + `<rush>_camera.csv`, then commits and
 pushes, so the data is on GitHub, timestamped, and off the laptop. Details: `docs/data_contract.md` §10.
 Leave out `--push` if the wifi is bad; it commits locally and pushes on a later round.
+
+### Time series in Tiger Cloud
+`ingest/tigerdata.py` streams every new camera, board, queue-state, forecast and hand-count row
+into Tiger Cloud hypertables (TimescaleDB), with a per-minute continuous aggregate `queue_1min`
+that the database keeps up to date. Once:
+1. Tiger Console → *New service* → download the config; put its connection string in `.env` as
+   `TIGER_DATABASE_URL=postgres://...`.
+2. `python ingest/tigerdata.py setup` (creates the hypertables and `queue_1min`).
+
+Then leave `python ingest/tigerdata.py sync --watch 10` running. Only new rows are sent, so it can
+be stopped, restarted or left offline and catches up. `python ingest/tigerdata.py query` shows the
+last 30 min per minute; in Tiger Console's SQL editor, e.g.
+`SELECT * FROM queue_1min ORDER BY minute DESC LIMIT 30;`
+A recorded night loads the same way: `sync --live data/archive/<date> --site replay`.
+Tables: `docs/data_contract.md` §11.
 
 ### How well does the camera count? (and tuning it)
 ```
@@ -175,7 +191,7 @@ colour cut 296 counted arrivals to 28 (truth 28); tuning on one rush took the se
    If the LEDs go off or the dashboard says *No update from the agent* during a rush, a
    process has stopped: restart it.
 
-Tests: `python tests/test_pipeline.py` (44 checks, about 50 s, includes both dashboards, the app server,
+Tests: `python tests/test_pipeline.py` (45 checks, about 50 s, includes both dashboards, the app server,
 the people tracker and the archive).
 
 Extras (each optional, each its own terminal):

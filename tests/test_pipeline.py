@@ -26,6 +26,7 @@ from ingest import state as S  # noqa: E402
 from ingest import archive as AR  # noqa: E402
 from ingest import camera_accuracy as CA  # noqa: E402
 from ingest import fake_camera as FC  # noqa: E402
+from ingest import tigerdata as TD  # noqa: E402
 from ingest.camera_count import HEADER as CAM_HEADER, count_in_zone, resume_offsets  # noqa: E402
 from ingest.tracker import Tracker, decode_hist, encode_hist  # noqa: E402
 from ingest.logger import csv_row, led_command, parse_line  # noqa: E402
@@ -961,6 +962,27 @@ def test_archive_keeps_everything_and_cuts_rushes():
     assert '"zone"' in lines[0] and len(lines) > 10
     preds = (folder / "predictions.jsonl").read_text().splitlines()
     assert len(preds) == 1  # the same prediction is not logged twice
+
+
+def test_tigerdata_rows_from_the_files():
+    """What ingest/tigerdata.py sends: one row per camera / board line, the latest state and
+    prediction, and the ground truth per rush. A half-written last line is skipped."""
+    live = TMP / "tiger_live"
+    (live / "gt").mkdir(parents=True, exist_ok=True)
+    (live / "camera.csv").write_text(CAM_HEADER + "\n2026-10-24T18:00:00,1,1,0,1,1\n2026-10-24T18:00:03,2,2,0,2,2\n2026-10-24T18:00")
+    (live / "run.csv").write_text("wall_time,ms,dist_cm,in_total,out_total,btn_total\n2026-10-24T18:00:00,1000,300.5,0,0,1\n")
+    (live / "prediction.json").write_text((ROOT / "data/sample/prediction_sample.json").read_text())
+    (live / "queue_state.json").write_text((ROOT / "data/sample/queue_state_sample.json").read_text())
+    (live / "gt" / "hand_count_dinner.csv").write_text("wall_time,event\n2026-10-24T18:05:00,served\n")
+    cam = TD.camera_rows(live, "x")
+    assert len(cam) == 2 and cam[1][1:] == ("x", 2, 2, 0, 2, 2) and cam[0][0].tzinfo is not None
+    assert TD.board_rows(live, "x")[0][2:] == (300.5, 0, 0, 1)
+    st, pred = TD.state_row(live, "x"), TD.prediction_rows(live, "x")
+    assert len(st) == 1 and json.loads(st[0][-1])["queue_length"] is not None
+    assert len(pred) == 1 and len(pred[0]) == 7 + 9 + 3 and pred[0][3] in ("go_now", "wait", "unknown", "closed")
+    gt = TD.ground_truth(live / "gt", "x")
+    assert list(gt) == [("hand_counts", "dinner")] and gt[("hand_counts", "dinner")][0][2:] == ("dinner", "served")
+    assert TD.camera_rows(TMP / "nothing_here", "x") == [] and TD.state_row(TMP / "nothing_here", "x") == []
 
 
 def run_all():
