@@ -1,5 +1,5 @@
 // QueueTime service worker: the app shell opens without the network; live data never comes from cache.
-const CACHE = "queuetime-v3";  // bump on every release so phones drop the old look
+const CACHE = "queuetime-v4";  // bump on every release so phones drop the old look
 const SHELL = ["/phone", "/", "/site.css", "/qt.js", "/terms", "/privacy", "/manifest.webmanifest", "/icons/icon.svg", "/icons/icon-192.png",
   "/fonts/IBMPlexSans-Regular.woff2", "/fonts/IBMPlexSans-SemiBold.woff2", "/fonts/IBMPlexSans-Bold.woff2",
   "/fonts/IBMPlexMono-Regular.woff2", "/fonts/IBMPlexMono-Medium.woff2"];

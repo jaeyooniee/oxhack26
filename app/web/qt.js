@@ -309,6 +309,45 @@ function render(snap) {
   checkReminder(snap);
 }
 
+// A system notification whenever the decision changes (needs https: browsers refuse notifications
+// on plain http from another device). The body is Gemini's sentence, the same one the voice says.
+let lastDecision = null;
+function canNotify() { return window.isSecureContext && "Notification" in window; }
+
+function showNotice(title, body, tag) {
+  if (!canNotify() || Notification.permission !== "granted") return;
+  if (navigator.serviceWorker && navigator.serviceWorker.controller) {
+    navigator.serviceWorker.ready.then((reg) => reg.showNotification(title, { body, tag, icon: "/icons/icon-192.png" })).catch(() => {});
+  } else {
+    try { new Notification(title, { body, tag }); } catch (e) { /* ignore */ }
+  }
+}
+
+function notifyChange(snap) {
+  const p = snap && snap.prediction;
+  if (!p) return;
+  const key = [p.recommendation, p.best_time || "", p.explanation || ""].join("|");
+  const first = lastDecision === null;
+  if (key === lastDecision) return;
+  lastDecision = key;
+  if (first || (p.recommendation !== "go_now" && p.recommendation !== "wait")) return; // not on page load
+  const s = snap.state || {};
+  const title = p.recommendation === "go_now" ? "QueueTime: go now" : `QueueTime: wait, go at ${p.best_time}`;
+  const body = p.explanation || `About ${num(s.wait_now_min)} min now, ${s.queue_length} in the queue.`;
+  showNotice(title, body, "qt-change");
+}
+
+function setupNotifyButton() {
+  const b = $("notify-btn");
+  if (!b || !canNotify()) return; // over http the browser would refuse anyway, so no button
+  const sync = () => { b.hidden = Notification.permission !== "default"; };
+  sync();
+  b.addEventListener("click", () => Notification.requestPermission().then(() => {
+    sync();
+    if (Notification.permission === "granted") showNotice("QueueTime", "Notifications on. You'll hear when the call changes.", "qt-on");
+  }).catch(() => {}));
+}
+
 async function poll() {
   try {
     const r = await fetch("/api/snapshot", { cache: "no-store" });
@@ -316,6 +355,7 @@ async function poll() {
     last = await r.json();
     failures = 0;
     render(last);
+    notifyChange(last);
   } catch (e) {
     failures += 1;
     if (failures >= 2) render(null); // one blip is not "offline"
@@ -341,5 +381,6 @@ document.addEventListener("DOMContentLoaded", () => {
   const rj = $("replay-jump");
   if (rj) rj.addEventListener("click", () => replayCmd({ action: "jump", minute: Number($("replay-min").value || 0) }));
   if ("serviceWorker" in navigator && window.isSecureContext) navigator.serviceWorker.register("/sw.js").catch(() => {});
+  setupNotifyButton();
   poll();
 });

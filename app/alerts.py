@@ -41,6 +41,11 @@ def phrase(pred: dict | None) -> str | None:
     """The sentence to say for a prediction (numbers from Python), or None to stay quiet."""
     if not pred or pred.get("recommendation") not in ("go_now", "wait"):
         return None
+    # Gemini's own explanation when it made the decision (queue_agent.py has already checked that
+    # every number in it came from a tool), otherwise the fixed sentence built from the numbers.
+    explanation = (pred.get("explanation") or "").strip()
+    if "gemini" in str(pred.get("source", "")) and explanation:
+        return explanation
     wait = round(float(pred.get("wait_now_min", 0)))
     if pred["recommendation"] == "go_now":
         if wait <= 1:
